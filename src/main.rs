@@ -12,8 +12,7 @@ const CAMERA_MOVE_SPEED: f32 = 500.0;
 fn main() {
     App::new()
         .add_systems(Startup, (scene_setup))
-        .add_plugins((DefaultPlugins, MeshPickingPlugin))
-        .add_plugins(PawnPlugin)
+        .add_plugins((DefaultPlugins, MeshPickingPlugin, PawnPlugin))
         .add_systems(Update, move_camera)
         .add_systems(Update, zoom_camera)
         // .add_systems(Update, (hello_world, (update_people, greet_people).chain()))
@@ -21,9 +20,9 @@ fn main() {
 }
 
 fn scene_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn(Camera2d::default());
-
     commands.spawn(Sprite::from_image(asset_server.load("farley.png")));
+    commands.spawn(Camera2d::default());
+    // asset_server.load("sprites/ball.png");
 }
 
 /// Update the camera position with keyboard inputs.
