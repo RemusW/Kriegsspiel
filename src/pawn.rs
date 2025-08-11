@@ -1,10 +1,10 @@
-use bevy::prelude::*;
+use crate::actions::action::{ActionManager, Movable, MoveAction};
+use bevy::{prelude::*, render::view::RenderLayers};
 pub struct PawnPlugin;
 
 impl Plugin for PawnPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_pawns);
-        // app.add_systems(Update, rotate_on_drag);
     }
 }
 
@@ -25,8 +25,11 @@ pub fn spawn_pawns(
             GlobalTransform::default(),
             Mesh2d(mesh),
             MeshMaterial2d(material),
+            Pawn,
+            Movable,
+            RenderLayers::layer(0),
         ))
-        .observe(rotate_on_drag);
+        .observe(handle_move_drag);
 }
 
 // fn draw_pawns(mut query: Query<&mut Transform, With<Pawn>>) {
@@ -39,9 +42,25 @@ pub fn spawn_pawns(
 // }
 
 /// An observer to rotate an entity when it is dragged
+fn handle_move_drag(
+    drag: Trigger<Pointer<Drag>>,
+    mut action_manager: ResMut<ActionManager>,
+    transforms: Query<&Transform>,
+    mut commands: Commands,
+) {
+    if let Ok(transform) = transforms.get(drag.target()) {
+        let mut to_transform = transform.clone();
+        to_transform.translation += Vec3::new(drag.delta.x, -drag.delta.y, 0.0);
+        let move_action = Box::new(MoveAction {
+            entity: drag.target(),
+            from: *transform,
+            to: to_transform,
+        });
+        action_manager.execute(move_action, &mut commands);
+    }
+}
+
 fn rotate_on_drag(drag: Trigger<Pointer<Drag>>, mut transforms: Query<&mut Transform>) {
     let mut transform = transforms.get_mut(drag.target()).unwrap();
     transform.translation += Vec3::new(drag.delta.x, -drag.delta.y, 0.0);
-    // transform.rotate_y(drag.delta.x * 0.02)
-    // transform.rotate_x(drag.delta.y * 0.02);
 }

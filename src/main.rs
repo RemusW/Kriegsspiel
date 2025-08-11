@@ -1,3 +1,19 @@
+// Support configuring Bevy lints within code.
+#![cfg_attr(bevy_lint, feature(register_tool), register_tool(bevy))]
+// Disable console on Windows for non-dev builds.
+#![cfg_attr(not(feature = "dev"), windows_subsystem = "windows")]
+
+// mod asset_tracking;
+// mod audio;
+// mod demo;
+// #[cfg(feature = "dev")]
+// mod dev_tools;
+// mod menus;
+// mod screens;
+// mod theme;
+mod actions;
+
+use bevy::render::view::RenderLayers;
 use bevy::DefaultPlugins;
 use bevy::input::mouse::MouseWheel;
 use bevy::math::ops::powf;
@@ -9,19 +25,19 @@ mod pawn;
 
 const CAMERA_MOVE_SPEED: f32 = 500.0;
 
-fn main() {
+fn main() -> AppExit {
     App::new()
-        .add_systems(Startup, (scene_setup))
-        .add_plugins((DefaultPlugins, MeshPickingPlugin, PawnPlugin))
+        .add_systems(Startup, scene_setup)
+        .add_plugins((DefaultPlugins, MeshPickingPlugin, PawnPlugin, actions::plugin))
         .add_systems(Update, move_camera)
         .add_systems(Update, zoom_camera)
         // .add_systems(Update, (hello_world, (update_people, greet_people).chain()))
-        .run();
+        .run()
 }
 
 fn scene_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn(Sprite::from_image(asset_server.load("farley.png")));
-    commands.spawn(Camera2d::default());
+    // commands.spawn((Sprite::from_image(asset_server.load("farley.png")), RenderLayers::layer(1)));
+    commands.spawn((Camera2d::default(), RenderLayers::from_layers(&[0, 1])));
     // asset_server.load("sprites/ball.png");
 }
 
@@ -58,7 +74,7 @@ fn zoom_camera(
     mut scroll_evr: EventReader<MouseWheel>,
     time: Res<Time<Fixed>>,
 ) {
-    let Ok((mut camera, mut transform, mut projection)) = camera_query.single_mut() else {
+    let Ok((_, _, mut projection)) = camera_query.single_mut() else {
         return;
     };
 
