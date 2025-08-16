@@ -29,7 +29,8 @@ pub fn spawn_pawns(
             Movable,
             RenderLayers::layer(0),
         ))
-        .observe(handle_move_drag);
+        .observe(handle_move_drag)
+        .observe(rotate_on_drag);
 }
 
 // fn draw_pawns(mut query: Query<&mut Transform, With<Pawn>>) {
@@ -41,19 +42,19 @@ pub fn spawn_pawns(
 // }
 // }
 
-/// An observer to rotate an entity when it is dragged
 fn handle_move_drag(
-    drag: Trigger<Pointer<Drag>>,
+    drag: Trigger<Pointer<DragEnd>>,
     mut action_manager: ResMut<ActionManager>,
     transforms: Query<&Transform>,
     mut commands: Commands,
 ) {
     if let Ok(transform) = transforms.get(drag.target()) {
-        let mut to_transform = transform.clone();
-        to_transform.translation += Vec3::new(drag.delta.x, -drag.delta.y, 0.0);
+        let to_transform = *transform;
+        let mut from_transform = to_transform.clone();
+        from_transform.translation -= Vec3::new(drag.distance.x, -drag.distance.y, 0.0);
         let move_action = Box::new(MoveAction {
             entity: drag.target(),
-            from: *transform,
+            from: from_transform,
             to: to_transform,
         });
         action_manager.execute(move_action, &mut commands);

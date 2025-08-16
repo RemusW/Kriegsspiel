@@ -78,10 +78,10 @@ fn handle_undo_redo(
     mut action_manager: ResMut<ActionManager>,
     mut commands: Commands,
 ) {
-    if input.pressed(KeyCode::KeyZ) {
+    if input.just_pressed(KeyCode::KeyZ) {
         action_manager.undo(&mut commands);
     }
-    if input.pressed(KeyCode::KeyY) {
+    if input.just_pressed(KeyCode::KeyY) {
         action_manager.redo(&mut commands);
     }
 }
