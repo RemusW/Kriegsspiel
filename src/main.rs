@@ -3,21 +3,23 @@
 // Disable console on Windows for non-dev builds.
 #![cfg_attr(not(feature = "dev"), windows_subsystem = "windows")]
 
-// mod asset_tracking;
-// mod audio;
+mod asset_tracking;
+mod audio;
 // mod demo;
-// #[cfg(feature = "dev")]
-// mod dev_tools;
-// mod menus;
-// mod screens;
-// mod theme;
 mod actions;
+#[cfg(feature = "dev")]
+mod dev_tools;
+mod interface;
+mod menus;
+mod screens;
+mod theme;
 
-use bevy::render::view::RenderLayers;
 use bevy::DefaultPlugins;
 use bevy::input::mouse::MouseWheel;
 use bevy::math::ops::powf;
 use bevy::prelude::*;
+use bevy::render::view::RenderLayers;
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use crate::pawn::PawnPlugin;
 
@@ -28,7 +30,15 @@ const CAMERA_MOVE_SPEED: f32 = 500.0;
 fn main() -> AppExit {
     App::new()
         .add_systems(Startup, scene_setup)
-        .add_plugins((DefaultPlugins, MeshPickingPlugin, PawnPlugin, actions::plugin))
+        .add_plugins((
+            DefaultPlugins,
+            interface::plugin,
+            MeshPickingPlugin,
+            PawnPlugin,
+            actions::plugin,
+            EguiPlugin::default(),
+            dev_tools::plugin,
+        ))
         .add_systems(Update, move_camera)
         .add_systems(Update, zoom_camera)
         // .add_systems(Update, (hello_world, (update_people, greet_people).chain()))
@@ -36,7 +46,11 @@ fn main() -> AppExit {
 }
 
 fn scene_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // commands.spawn((Sprite::from_image(asset_server.load("farley.png")), RenderLayers::layer(1)));
+    commands.spawn((
+        Sprite::from_image(asset_server.load("farley.png")),
+        RenderLayers::layer(1),
+        Transform::from_xyz(0.0, 0.0, -1.0),
+    ));
     commands.spawn((Camera2d::default(), RenderLayers::from_layers(&[0, 1])));
     // asset_server.load("sprites/ball.png");
 }

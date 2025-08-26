@@ -1,5 +1,5 @@
 use crate::actions::action::{ActionManager, Movable, MoveAction};
-use bevy::{prelude::*, render::view::RenderLayers};
+use bevy::{ecs::system::entity_command::observe, prelude::*, render::view::RenderLayers};
 pub struct PawnPlugin;
 
 impl Plugin for PawnPlugin {
@@ -16,7 +16,7 @@ pub fn spawn_pawns(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let mesh = meshes.add(Rectangle::new(20.0, 10.0));
+    let mesh = meshes.add(Rectangle::new(100.0, 50.0));
     let material = materials.add(Color::srgb(1.0, 0.0, 0.0));
 
     commands
@@ -29,29 +29,29 @@ pub fn spawn_pawns(
             Movable,
             RenderLayers::layer(0),
         ))
-        .observe(handle_move_drag)
-        .observe(rotate_on_drag);
+        .observe(record_drag)
+        .observe(drag_update)
+        .observe(selected_update)
+        .observe(unselected_update);
 }
 
-// fn draw_pawns(mut query: Query<&mut Transform, With<Pawn>>) {
-// for mut name in &mut query {
-//     if name.0 == "Elaina Proctor" {
-//         name.0 = "Elaina Hume".to_string();
-//         break; // We don't need to change any other nam's.
-//     }
-// }
-// }
-
-fn handle_move_drag(
+fn record_drag(
     drag: Trigger<Pointer<DragEnd>>,
     mut action_manager: ResMut<ActionManager>,
     transforms: Query<&Transform>,
     mut commands: Commands,
+    camera_query: Single<(&Camera, &GlobalTransform, &Projection)>,
 ) {
     if let Ok(transform) = transforms.get(drag.target()) {
+        let (_, _, camera_projection) = *camera_query;
+        let Projection::Orthographic(ortho) = camera_projection else {
+            return;
+        };
+
         let to_transform = *transform;
         let mut from_transform = to_transform.clone();
-        from_transform.translation -= Vec3::new(drag.distance.x, -drag.distance.y, 0.0);
+        let distance_delta = drag.distance * ortho.scale;
+        from_transform.translation -= Vec3::new(distance_delta.x, -distance_delta.y, 0.0);
         let move_action = Box::new(MoveAction {
             entity: drag.target(),
             from: from_transform,
@@ -61,7 +61,45 @@ fn handle_move_drag(
     }
 }
 
-fn rotate_on_drag(drag: Trigger<Pointer<Drag>>, mut transforms: Query<&mut Transform>) {
+fn drag_update(
+    drag: Trigger<Pointer<Move>>,
+    mut transforms: Query<&mut Transform, With<Selected>>,
+    camera_query: Single<(&Camera, &GlobalTransform)>,
+    // key_input: Res<ButtonInput<KeyCode>>,
+    // time: Res<Time>,
+) {
     let mut transform = transforms.get_mut(drag.target()).unwrap();
-    transform.translation += Vec3::new(drag.delta.x, -drag.delta.y, 0.0);
+    let pointer_position = drag.pointer_location.position;
+    transform.translation = Vec3::new(pointer_position.x, pointer_position.y, 0.0);
+
+    let (camera, camera_transform) = *camera_query;
+    let Ok(cursor_world) =
+        camera.viewport_to_world_2d(camera_transform, drag.pointer_location.position)
+    else {
+        return;
+    };
+
+    let mut transform = transforms.get_mut(drag.target()).unwrap();
+    transform.translation = Vec3::new(cursor_world.x, cursor_world.y, 0.0);
+
+    // rotate
+    // if key_input.pressed(KeyCode::KeyE) {
+    //     println!("EEEE");
+    //     transform.rotate_z((10.0 * time.delta_secs()).to_radians());
+    // }
+    // if key_input.pressed(KeyCode::KeyQ) {
+    //     println!("QQQQ");
+    //     transform.rotate_z((-10.0 * time.delta_secs()).to_radians());
+    // }
+}
+
+#[derive(Component)]
+struct Selected;
+
+fn selected_update(drag: Trigger<Pointer<Pressed>>, mut commands: Commands) {
+    commands.entity(drag.target).insert(Selected);
+}
+
+fn unselected_update(drag: Trigger<Pointer<Released>>, mut commands: Commands) {
+    commands.entity(drag.target).remove::<Selected>();
 }

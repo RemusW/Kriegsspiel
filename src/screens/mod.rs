@@ -1,8 +1,8 @@
 //! The game's main screen states and transitions between them.
 
-mod gameplay;
+// mod gameplay;
 mod loading;
-mod splash;
+// mod splash;
 mod title;
 
 use bevy::prelude::*;
@@ -11,9 +11,9 @@ pub(super) fn plugin(app: &mut App) {
     app.init_state::<Screen>();
 
     app.add_plugins((
-        gameplay::plugin,
+        // gameplay::plugin,
         loading::plugin,
-        splash::plugin,
+        // splash::plugin,
         title::plugin,
     ));
 }

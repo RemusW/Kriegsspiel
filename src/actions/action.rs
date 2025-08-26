@@ -30,7 +30,7 @@ impl Action for MoveAction {
                 *transform = to;
             }
         });
-        println!("move action");
+        println!("move action: from {:?} to {:?}", self.from, self.to);
     }
 
     fn undo(&mut self, commands: &mut Commands) {
@@ -41,7 +41,7 @@ impl Action for MoveAction {
                 *transform = from;
             }
         });
-        println!("undo action");
+        println!("undo action: from {:?} to {:?}", self.from.translation, self.to.translation);
     }
 }
 
