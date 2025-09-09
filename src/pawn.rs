@@ -1,10 +1,14 @@
 use crate::actions::action::{ActionManager, Movable, MoveAction};
-use bevy::{ecs::system::entity_command::observe, prelude::*, render::view::RenderLayers};
+use bevy::{
+    ecs::system::entity_command::observe, input::mouse::MouseButtonInput,
+    log::tracing_subscriber::filter::targets, prelude::*, render::view::RenderLayers,
+};
 pub struct PawnPlugin;
 
 impl Plugin for PawnPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_pawns);
+        app.add_systems(Update, drag_update);
     }
 }
 
@@ -30,7 +34,6 @@ pub fn spawn_pawns(
             RenderLayers::layer(0),
         ))
         .observe(record_drag)
-        .observe(drag_update)
         .observe(selected_update)
         .observe(unselected_update);
 }
@@ -62,35 +65,40 @@ fn record_drag(
 }
 
 fn drag_update(
-    drag: Trigger<Pointer<Move>>,
     mut transforms: Query<&mut Transform, With<Selected>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
-    // key_input: Res<ButtonInput<KeyCode>>,
-    // time: Res<Time>,
+    key_input: Res<ButtonInput<KeyCode>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    window: Query<&Window>,
+    time: Res<Time>,
 ) {
-    let mut transform = transforms.get_mut(drag.target()).unwrap();
-    let pointer_position = drag.pointer_location.position;
-    transform.translation = Vec3::new(pointer_position.x, pointer_position.y, 0.0);
-
-    let (camera, camera_transform) = *camera_query;
-    let Ok(cursor_world) =
-        camera.viewport_to_world_2d(camera_transform, drag.pointer_location.position)
-    else {
+    let Some(cursor_position) = window.single().unwrap().cursor_position() else {
         return;
     };
 
-    let mut transform = transforms.get_mut(drag.target()).unwrap();
-    transform.translation = Vec3::new(cursor_world.x, cursor_world.y, 0.0);
+    if mouse_input.pressed(MouseButton::Left) {
+        for mut transform in transforms.iter_mut() {
+            transform.translation = Vec3::new(cursor_position.x, cursor_position.y, 0.0);
+            let (camera, camera_transform) = *camera_query;
+            if let Ok(cursor_world) =
+                camera.viewport_to_world_2d(camera_transform, cursor_position)
+            {
+                transform.translation = Vec3::new(cursor_world.x, cursor_world.y, 0.0);
+            }
+        }
+    }
 
     // rotate
-    // if key_input.pressed(KeyCode::KeyE) {
-    //     println!("EEEE");
-    //     transform.rotate_z((10.0 * time.delta_secs()).to_radians());
-    // }
-    // if key_input.pressed(KeyCode::KeyQ) {
-    //     println!("QQQQ");
-    //     transform.rotate_z((-10.0 * time.delta_secs()).to_radians());
-    // }
+    if key_input.pressed(KeyCode::KeyE) {
+        for mut transform in transforms.iter_mut() {
+            transform.rotate_z((-100.0 * time.delta_secs()).to_radians());
+        }
+    }
+    if key_input.pressed(KeyCode::KeyQ) {
+        for mut transform in transforms.iter_mut() {
+            transform.rotate_z((100.0 * time.delta_secs()).to_radians());
+        }
+    }
 }
 
 #[derive(Component)]
