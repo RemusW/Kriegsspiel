@@ -1,14 +1,10 @@
 use std::vec;
 
-use macroquad::prelude::*;
-
-const VIRTUAL_WIDTH: f32 = 650.0;
-const VIRTUAL_HEIGHT: f32 = 450.0;
-const ZOOM_FACTOR: f32 = 0.001;
+use macroquad::{prelude::*, text};
 
 /// How many pixels per world unit at the "reference" scale.
 /// Tweak this to make your world larger or smaller.
-const PIXELS_PER_UNIT: f32 = 32.0;
+const PIXELS_PER_UNIT: f32 = 10.0;
 
 fn world_camera() -> Camera2D {
     let sw = screen_width();
@@ -19,38 +15,20 @@ fn world_camera() -> Camera2D {
     let half_h = sh / (2.0 * PIXELS_PER_UNIT);
 
     Camera2D {
-        // Centre of the camera in world space
         target: vec2(0.0, 0.0),
-        // zoom maps world units → NDC (-1..1).
-        // macroquad's Camera2D zoom is (2/viewport_width, 2/viewport_height)
-        // in world units, so:
-        zoom: vec2(1.0 / half_w, -1.0 / half_h), // negative Y flips to match screen-Y
+        zoom: vec2(1.0 / half_w, -1.0 / half_h),
         ..Default::default()
     }
 }
 
 #[macroquad::main("BasicShapes")]
 async fn main() {
-    // let render_target = render_target(VIRTUAL_WIDTH as u32, VIRTUAL_HEIGHT as u32);
-    // render_target.texture.set_filter(FilterMode::Linear);
-
-    // let mut render_target_cam =
-    //     Camera2D::from_display_rect(Rect::new(0., 0., VIRTUAL_WIDTH, VIRTUAL_HEIGHT));
-    // render_target_cam.render_target = Some(render_target.clone());
-
     let mut pawns: Vec<Pawn> = vec![];
     let mut camera = world_camera();
-    // let mut camera = Camera2D {
-    //     // zoom: vec2(1., 1.),
-    //     // zoom: vec2(1.0 / screen_width(), 1.0 / screen_height()),
-    //     zoom: vec2(ZOOM_FACTOR, ZOOM_FACTOR * screen_width() / screen_height()),
-    //     // zoom: vec2(0.01, 0.01),
-    //     // offset: vec2(0.0, 100.0),
-    //     // target: Vec2::ZERO,
-    //     target: vec2(screen_width() / 2.0, screen_height() / 2.0),
-    //     ..Default::default()
-    // };
     let texture = load_texture("assets/infantry.png").await.unwrap();
+    texture.set_filter(FilterMode::Linear);
+    let mut cavalry = Sprite::new(texture);
+    cavalry.set_scale(5.0, 5.0);
 
     loop {
         #[cfg(not(target_arch = "wasm32"))]
@@ -61,14 +39,39 @@ async fn main() {
 
         clear_background(LIGHTGRAY);
 
-        draw_texture(&texture, 0.0, 0.0, WHITE);
+        // draw_texture(&texture, 0.0, 0.0, WHITE);
+        // draw_texture_ex(
+        //     &texture,
+        //     0.0,
+        //     0.0,
+        //     WHITE,
+        //     DrawTextureParams {
+        //         // dest_size: Some(vec2(texture.width() / PIXELS_PER_UNIT, texture.height() / PIXELS_PER_UNIT)), // resize to this world size
+        //         dest_size: Some(vec2(
+        //             texture.width() / texture.height() * 5.0,
+        //             texture.height() / texture.width() * 5.0,
+        //         )),
+        //         source: None, // None = full texture, or Some(Rect{...}) for a sprite sheet
+        //         rotation: 0.0, // radians
+        //         flip_x: false,
+        //         flip_y: false,
+        //         pivot: None, // rotation pivot, defaults to center
+        //     },
+        // );
+        cavalry.draw();
+
+        // draw world grid
+        draw_grid(
+            &camera,
+            camera.target,
+            screen_width() / 2.0,
+            screen_height() / 2.0,
+        );
 
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
-        draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 120.0, 60.0, GREEN);
+        draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 500.0, 300.0, GREEN);
         draw_circle(screen_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
-        draw_line(-0.4, 0.4, -0.8, 0.9, 0.05, BLUE);
-        draw_rectangle(-0.3, 0.3, 0.2, 0.2, GREEN);
-        draw_circle(0., 0., 0.1, YELLOW);
+        draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
         for ele in pawns.iter() {
             ele.draw();
@@ -91,8 +94,7 @@ async fn main() {
             20.0,
             WHITE,
         );
-
-        draw_fps();
+        draw_text(&format!("{:?}", mouse_position()), 10.0, 40.0, 20.0, WHITE);
 
         next_frame().await
     }
@@ -125,10 +127,17 @@ fn spawn_pawn(pawns: &mut Vec<Pawn>) {
 }
 
 fn update_camera(camera: &mut Camera2D) {
+    let sw = screen_width();
+    let sh = screen_height();
+    let half_w = sw / (2.0 * PIXELS_PER_UNIT);
+    let half_h = sh / (2.0 * PIXELS_PER_UNIT);
+    // camera.zoom = vec2(1.0 / half_w, -1.0 / half_h);
+
     if is_mouse_button_down(MouseButton::Middle) {
         let mouse_delta = mouse_delta_position();
-        camera.target += mouse_delta * 1000.0;
-        println!("{:?}", camera)
+        camera.target.x += mouse_delta.x * 10.0;
+        camera.target.y -= mouse_delta.y * 10.0;
+        // println!("{:?}", camera)
     }
 
     // let (_x, y) = mouse_wheel();
@@ -163,5 +172,98 @@ fn update_camera(camera: &mut Camera2D) {
             // camera.zoom += y;
         }
         _ => (),
+    }
+}
+
+fn draw_grid(camera: &Camera2D, camera_target: Vec2, half_w: f32, half_h: f32) {
+    let spacing = 5.0;
+    let line_color = Color::new(0.4, 0.4, 0.4, 1.0);
+
+    let x_start = ((camera_target.x - half_w) / spacing).floor() as i32 - 1;
+    let x_end = ((camera_target.x + half_w) / spacing).ceil() as i32 + 1;
+    let y_start = ((camera_target.y - half_h) / spacing).floor() as i32 - 1;
+    let y_end = ((camera_target.y + half_h) / spacing).ceil() as i32 + 1;
+
+    for x in x_start..=x_end {
+        let wx = x as f32 * spacing;
+        draw_line(
+            wx,
+            y_start as f32 * spacing,
+            wx,
+            y_end as f32 * spacing,
+            1.0 / PIXELS_PER_UNIT,
+            line_color,
+        );
+    }
+    for y in y_start..=y_end {
+        let wy = y as f32 * spacing;
+        draw_line(
+            x_start as f32 * spacing,
+            wy,
+            x_end as f32 * spacing,
+            wy,
+            1.0 / PIXELS_PER_UNIT,
+            line_color,
+        );
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Sprite {
+    texture: Texture2D,
+    transform: Transform,
+}
+
+impl Sprite {
+    fn new(texture: Texture2D) -> Self {
+        Self {
+            transform: Transform::default(),
+            texture: texture,
+        }
+    }
+
+    fn set_position(&mut self, x: f32, y: f32) {
+        self.transform.pos.x = x;
+        self.transform.pos.y = y;
+    }
+
+    fn set_scale(&mut self, x: f32, y: f32) {
+        self.transform.scale.x = x;
+        self.transform.scale.y = y;
+    }
+
+    fn draw(&self) {
+        let aspect = self.texture.width() / self.texture.height();
+        draw_texture_ex(
+            &self.texture,
+            self.transform.pos.x,
+            self.transform.pos.y,
+            WHITE,
+            DrawTextureParams {
+                dest_size: Some(vec2(
+                    self.transform.scale.x * aspect,
+                    self.transform.scale.y / aspect,
+                )),
+                source: None,
+                rotation: 0.0,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Transform {
+    pos: Vec2,
+    rotation: f32,
+    scale: Vec2,
+}
+impl Default for Transform {
+    fn default() -> Self {
+        Self {
+            pos: Vec2::ZERO,
+            rotation: 0.0,
+            scale: Vec2::ONE,
+        }
     }
 }
