@@ -1,72 +1,42 @@
+mod camera;
+
 use std::vec;
+use crate::camera::Camera;
 
 use macroquad::{prelude::*, text};
 
-/// How many pixels per world unit at the "reference" scale.
-/// Tweak this to make your world larger or smaller.
-const PIXELS_PER_UNIT: f32 = 10.0;
-
-fn world_camera() -> Camera2D {
-    let sw = screen_width();
-    let sh = screen_height();
-
-    // Half-extents in world units
-    let half_w = sw / (2.0 * PIXELS_PER_UNIT);
-    let half_h = sh / (2.0 * PIXELS_PER_UNIT);
-
-    Camera2D {
-        target: vec2(0.0, 0.0),
-        zoom: vec2(1.0 / half_w, -1.0 / half_h),
-        ..Default::default()
-    }
-}
+const PIXELS_PER_UNIT: f32 = 1.0;
 
 #[macroquad::main("BasicShapes")]
 async fn main() {
     let mut pawns: Vec<Pawn> = vec![];
-    let mut camera = world_camera();
-    let texture = load_texture("assets/infantry.png").await.unwrap();
-    texture.set_filter(FilterMode::Linear);
-    let mut cavalry = Sprite::new(texture);
+    // let mut camera = world_camera();
+    let mut camera = Camera::new();
+
+    let cavalry = load_texture("assets/infantry.png").await.unwrap();
+    cavalry.set_filter(FilterMode::Linear);
+    let mut cavalry = Sprite::new(cavalry);
     cavalry.set_scale(5.0, 5.0);
+
+    let farley = load_texture("assets/farley.png").await.unwrap();
+    farley.set_filter(FilterMode::Nearest);
+    let mut farley = Sprite::new(farley);
+    farley.set_scale(3200.0, -5500.0);
 
     loop {
         #[cfg(not(target_arch = "wasm32"))]
         if is_key_down(KeyCode::Escape) {
             break;
         }
-        set_camera(&camera);
+        set_camera(&camera.to_macroquad());
 
         clear_background(LIGHTGRAY);
 
-        // draw_texture(&texture, 0.0, 0.0, WHITE);
-        // draw_texture_ex(
-        //     &texture,
-        //     0.0,
-        //     0.0,
-        //     WHITE,
-        //     DrawTextureParams {
-        //         // dest_size: Some(vec2(texture.width() / PIXELS_PER_UNIT, texture.height() / PIXELS_PER_UNIT)), // resize to this world size
-        //         dest_size: Some(vec2(
-        //             texture.width() / texture.height() * 5.0,
-        //             texture.height() / texture.width() * 5.0,
-        //         )),
-        //         source: None, // None = full texture, or Some(Rect{...}) for a sprite sheet
-        //         rotation: 0.0, // radians
-        //         flip_x: false,
-        //         flip_y: false,
-        //         pivot: None, // rotation pivot, defaults to center
-        //     },
-        // );
+        farley.draw();
         cavalry.draw();
 
         // draw world grid
-        draw_grid(
-            &camera,
-            camera.target,
-            screen_width() / 2.0,
-            screen_height() / 2.0,
-        );
+        draw_grid(camera.target, screen_width() / 2.0, screen_height() / 2.0);
 
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
         draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 500.0, 300.0, GREEN);
@@ -76,11 +46,13 @@ async fn main() {
         for ele in pawns.iter() {
             ele.draw();
         }
-        spawn_pawn(&mut pawns);
+        spawn_pawn(&mut pawns, &camera);
 
-        update_camera(&mut camera);
+        camera.update();
 
         set_default_camera();
+
+        // Debug information
         draw_text(
             &format!(
                 "Window: {}x{}  |  World units visible: {:.1} x {:.1}",
@@ -113,69 +85,20 @@ impl Pawn {
 
     fn draw(&self) {
         let translation = self.transform.translation;
-        draw_rectangle(translation.x, translation.y, 10.0, 10.0, RED);
+        draw_rectangle(translation.x, translation.y, 100.0, 100.0, RED);
         // println!("{:?}", translation);
     }
 }
 
-fn spawn_pawn(pawns: &mut Vec<Pawn>) {
+fn spawn_pawn(pawns: &mut Vec<Pawn>, camera: &Camera) {
     if is_mouse_button_pressed(MouseButton::Left) {
-        let position = Vec2::from(mouse_position());
+        let position = camera.screen_to_world(mouse_position().into());
         let pawn = Pawn::new(position);
         pawns.push(pawn);
     }
 }
 
-fn update_camera(camera: &mut Camera2D) {
-    let sw = screen_width();
-    let sh = screen_height();
-    let half_w = sw / (2.0 * PIXELS_PER_UNIT);
-    let half_h = sh / (2.0 * PIXELS_PER_UNIT);
-    // camera.zoom = vec2(1.0 / half_w, -1.0 / half_h);
-
-    if is_mouse_button_down(MouseButton::Middle) {
-        let mouse_delta = mouse_delta_position();
-        camera.target.x += mouse_delta.x * 10.0;
-        camera.target.y -= mouse_delta.y * 10.0;
-        // println!("{:?}", camera)
-    }
-
-    // let (_x, y) = mouse_wheel();
-    // if y != 0.0 {
-    //     // Normalize mouse wheel values is browser (chromium: 53, firefox: 3)
-    //     #[cfg(target_arch = "wasm32")]
-    //     let y = if y < 0.0 {
-    //         -1.0
-    //     } else if y > 0.0 {
-    //         1.0
-    //     } else {
-    //         0.0
-    //     };
-    //     if is_key_down(KeyCode::LeftControl) {
-    //         camera.zoom += 1.1f32.powf(y);
-    //     }
-    // }
-    match mouse_wheel() {
-        (_x, y) if y != 0.0 => {
-            // Normalize mouse wheel values is browser (chromium: 53, firefox: 3)
-            #[cfg(target_arch = "wasm32")]
-            let y = if y < 0.0 {
-                -1.0
-            } else if y > 0.0 {
-                1.0
-            } else {
-                0.0
-            };
-            if is_key_down(KeyCode::LeftControl) {
-                camera.zoom *= 1.1f32.powf(y);
-            }
-            // camera.zoom += y;
-        }
-        _ => (),
-    }
-}
-
-fn draw_grid(camera: &Camera2D, camera_target: Vec2, half_w: f32, half_h: f32) {
+fn draw_grid(camera_target: Vec2, half_w: f32, half_h: f32) {
     let spacing = 5.0;
     let line_color = Color::new(0.4, 0.4, 0.4, 1.0);
 
