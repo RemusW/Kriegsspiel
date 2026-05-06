@@ -1,9 +1,15 @@
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+#![allow(dead_code)]
+
 mod camera;
+mod sprite;
 
-use std::vec;
 use crate::camera::Camera;
+use crate::sprite::{Sprite, Pawn};
+use std::vec;
 
-use macroquad::{prelude::*, text};
+use macroquad::prelude::*;
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
@@ -16,12 +22,13 @@ async fn main() {
     let cavalry = load_texture("assets/infantry.png").await.unwrap();
     cavalry.set_filter(FilterMode::Linear);
     let mut cavalry = Sprite::new(cavalry);
-    cavalry.set_scale(5.0, 5.0);
+    // cavalry.set_scale(5.0, 5.0);
 
     let farley = load_texture("assets/farley.png").await.unwrap();
-    farley.set_filter(FilterMode::Nearest);
+    farley.set_filter(FilterMode::Linear);
     let mut farley = Sprite::new(farley);
-    farley.set_scale(3200.0, -5500.0);
+    farley.set_size(0.1, -0.1);
+    // farley.set_scale(3200.0, -5500.0);
 
     loop {
         #[cfg(not(target_arch = "wasm32"))]
@@ -32,11 +39,11 @@ async fn main() {
 
         clear_background(LIGHTGRAY);
 
-        farley.draw();
-        cavalry.draw();
+        farley.draw_default();
+        cavalry.draw_default();
 
         // draw world grid
-        draw_grid(camera.target, screen_width() / 2.0, screen_height() / 2.0);
+        // draw_grid(camera.target, screen_width() / 2.0, screen_height() / 2.0);
 
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
         draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 500.0, 300.0, GREEN);
@@ -46,7 +53,7 @@ async fn main() {
         for ele in pawns.iter() {
             ele.draw();
         }
-        spawn_pawn(&mut pawns, &camera);
+        spawn_pawn(&mut pawns, &camera, &cavalry);
 
         camera.update();
 
@@ -72,28 +79,19 @@ async fn main() {
     }
 }
 
-struct Pawn {
-    transform: Affine2,
-}
-
-impl Pawn {
-    fn new(position: Vec2) -> Self {
-        Pawn {
-            transform: Affine2::from_translation(position),
-        }
-    }
-
-    fn draw(&self) {
-        let translation = self.transform.translation;
-        draw_rectangle(translation.x, translation.y, 100.0, 100.0, RED);
-        // println!("{:?}", translation);
+fn pick_pawn(pawns: &Vec<Pawn>, camera: &Camera) {
+    let mouse_pos = mouse_position();
+    let mouse_pos = camera.screen_to_world(mouse_pos.into());
+    for pawn in pawns.iter() {
+        pawn.contains_point(mouse_pos);
     }
 }
 
-fn spawn_pawn(pawns: &mut Vec<Pawn>, camera: &Camera) {
+fn spawn_pawn(pawns: &mut Vec<Pawn>, camera: &Camera, sprite: &Sprite) {
     if is_mouse_button_pressed(MouseButton::Left) {
         let position = camera.screen_to_world(mouse_position().into());
-        let pawn = Pawn::new(position);
+        let mut pawn = Pawn::new(position, sprite.clone());
+        pawn.set_scale(0.1, 0.1);
         pawns.push(pawn);
     }
 }
@@ -131,62 +129,4 @@ fn draw_grid(camera_target: Vec2, half_w: f32, half_h: f32) {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Sprite {
-    texture: Texture2D,
-    transform: Transform,
-}
 
-impl Sprite {
-    fn new(texture: Texture2D) -> Self {
-        Self {
-            transform: Transform::default(),
-            texture: texture,
-        }
-    }
-
-    fn set_position(&mut self, x: f32, y: f32) {
-        self.transform.pos.x = x;
-        self.transform.pos.y = y;
-    }
-
-    fn set_scale(&mut self, x: f32, y: f32) {
-        self.transform.scale.x = x;
-        self.transform.scale.y = y;
-    }
-
-    fn draw(&self) {
-        let aspect = self.texture.width() / self.texture.height();
-        draw_texture_ex(
-            &self.texture,
-            self.transform.pos.x,
-            self.transform.pos.y,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(
-                    self.transform.scale.x * aspect,
-                    self.transform.scale.y / aspect,
-                )),
-                source: None,
-                rotation: 0.0,
-                ..Default::default()
-            },
-        );
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Transform {
-    pos: Vec2,
-    rotation: f32,
-    scale: Vec2,
-}
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            pos: Vec2::ZERO,
-            rotation: 0.0,
-            scale: Vec2::ONE,
-        }
-    }
-}

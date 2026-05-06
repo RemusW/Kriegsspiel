@@ -32,7 +32,7 @@ impl Camera {
     }
 
     pub fn update(&mut self) {
-        let pan_speed = 10.0;
+        let pan_speed = 5.0;
         if is_mouse_button_down(MouseButton::Middle) {
             let mouse_delta = mouse_delta_position();
             self.target.x += mouse_delta.x * pan_speed;
@@ -53,7 +53,7 @@ impl Camera {
 
         let scroll = mouse_wheel().1;
         if scroll != 0.0 {
-            let zoom_speed = 1.3;
+            let zoom_speed = 1.2;
             if scroll > 0.0 {
                 self.zoom_factor *= zoom_speed;
             } else {
