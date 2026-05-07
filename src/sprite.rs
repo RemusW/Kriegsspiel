@@ -27,6 +27,11 @@ impl Pivot {
     }
 }
 
+pub enum SpriteImageMode {
+    Center,
+    Fill,
+}
+
 #[derive(Debug, Clone)]
 pub struct Sprite {
     texture: Texture2D,
@@ -59,20 +64,17 @@ impl Sprite {
         let size = self
             .custom_size
             .unwrap_or(vec2(self.texture.width(), self.texture.height()));
-        vec2(
-            size.x * PIXELS_PER_UNIT,
-            size.y * PIXELS_PER_UNIT,
-        )
+        vec2(size.x * PIXELS_PER_UNIT, size.y * PIXELS_PER_UNIT)
     }
 
     pub fn draw_default(&self) {
         let model_size = self.world_size();
-        let pos = self.pivot.offset(model_size);
+        let offset = self.pivot.offset(model_size);
 
         draw_texture_ex(
             &self.texture,
-            pos.x,
-            pos.y,
+            -1.0 * offset.x,
+            -1.0 * offset.y,
             WHITE,
             DrawTextureParams {
                 dest_size: Some(model_size),
@@ -127,13 +129,17 @@ impl Pawn {
     }
 
     fn collider(&self) -> Collider {
-        Collider::new(self.transform.pos, self.sprite.world_size())
+        // Collider::new(self.transform.pos, self.sprite.world_size())
+        Collider::new_from_pawn(&self)
     }
 
     pub fn contains_point(&self, point: Vec2) -> bool {
-        let res = self.collider().contains_point(point);
+        let collider = self.collider();
+        let res = collider.contains_point(point);
         if res {
             println!("Collision at {:?}", point);
+            println!("{:?}", collider);
+            collider.draw_debug();
         }
         res
     }
@@ -174,10 +180,32 @@ impl Collider {
         }
     }
 
+    pub fn new_from_pawn(pawn: &Pawn) -> Self {
+        let pos = pawn.transform.pos;
+        let scale = pawn.transform.scale;
+        let size = pawn.sprite.world_size();
+        let scaled_size = size / 2.0 * scale;
+        Self {
+            min: Vec2::new(pos.x - scaled_size.x, pos.y - scaled_size.y),
+            max: Vec2::new(pos.x + scaled_size.x, pos.y + scaled_size.y),
+        }
+    }
+
     pub fn contains_point(&self, point: Vec2) -> bool {
         self.min.x <= point.x
             && point.x <= self.max.x
             && self.min.y <= point.y
             && point.y <= self.max.y
+    }
+    
+    pub fn draw_debug(&self) {
+        let w = (self.max.x - self.min.x).abs() * 0.05;
+        let h = (self.max.y - self.min.y).abs() * 0.05;
+        let pos = vec2(self.min.x - w, self.min.y - h);
+
+        let w = (self.max.x - self.min.x).abs() * 1.1;
+        let h = (self.max.y - self.min.y).abs() * 1.1;
+
+        draw_rectangle(pos.x, pos.y, w, h, YELLOW);
     }
 }

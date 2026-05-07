@@ -6,17 +6,36 @@ mod camera;
 mod sprite;
 
 use crate::camera::Camera;
-use crate::sprite::{Sprite, Pawn};
+use crate::sprite::{Pawn, Sprite};
+use std::cell::Cell;
 use std::vec;
 
+use egui_macroquad::egui;
 use macroquad::prelude::*;
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum MouseMode {
+    #[default]
+    Spawn,
+    Drag,
+}
+
+impl MouseMode {
+    fn label(&self) -> &str {
+        match self {
+            MouseMode::Spawn => "Select",
+            MouseMode::Drag => "Move",
+        }
+    }
+}
+
 #[macroquad::main("BasicShapes")]
 async fn main() {
+    let mut action_mode = MouseMode::Spawn;
+
     let mut pawns: Vec<Pawn> = vec![];
-    // let mut camera = world_camera();
     let mut camera = Camera::new();
 
     let cavalry = load_texture("assets/infantry.png").await.unwrap();
@@ -27,8 +46,7 @@ async fn main() {
     let farley = load_texture("assets/farley.png").await.unwrap();
     farley.set_filter(FilterMode::Linear);
     let mut farley = Sprite::new(farley);
-    farley.set_size(0.1, -0.1);
-    // farley.set_scale(3200.0, -5500.0);
+    farley.set_size(1000.0, -1000.0);
 
     loop {
         #[cfg(not(target_arch = "wasm32"))]
@@ -39,21 +57,44 @@ async fn main() {
 
         clear_background(LIGHTGRAY);
 
+        egui_macroquad::ui(|ctx| {
+            egui::Window::new("Actions")
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label("Mouse Mode");
+                    ui.separator();
+
+                    for mode in [MouseMode::Spawn, MouseMode::Drag] {
+                        ui.selectable_value(&mut action_mode, mode, mode.label());
+                    }
+                });
+        });
+
         farley.draw_default();
-        cavalry.draw_default();
+        // cavalry.draw_default();
 
         // draw world grid
         // draw_grid(camera.target, screen_width() / 2.0, screen_height() / 2.0);
 
+        draw_circle(0.0, 0.0, 50.0, WHITE);
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
-        draw_rectangle(screen_width() / 2.0 - 60.0, 100.0, 500.0, 300.0, GREEN);
-        draw_circle(screen_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
+        // draw_rectangle(sn_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
         draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
         for ele in pawns.iter() {
             ele.draw();
         }
-        spawn_pawn(&mut pawns, &camera, &cavalry);
+
+        match action_mode {
+            MouseMode::Spawn => {
+                spawn_pawn(&mut pawns, &camera, &cavalry);
+            }
+            MouseMode::Drag => {
+                for pawn in pawns.iter() {
+                    pawn.contains_point(camera.screen_to_world(mouse_position().into()));
+                }
+            }
+        }
 
         camera.update();
 
@@ -74,6 +115,8 @@ async fn main() {
             WHITE,
         );
         draw_text(&format!("{:?}", mouse_position()), 10.0, 40.0, 20.0, WHITE);
+
+        egui_macroquad::draw();
 
         next_frame().await
     }
@@ -128,5 +171,3 @@ fn draw_grid(camera_target: Vec2, half_w: f32, half_h: f32) {
         );
     }
 }
-
-
