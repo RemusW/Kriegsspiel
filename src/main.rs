@@ -4,6 +4,7 @@
 
 mod camera;
 mod sprite;
+mod command;
 
 use crate::camera::Camera;
 use crate::sprite::{Pawn, Sprite};
@@ -12,6 +13,7 @@ use std::vec;
 
 use egui_macroquad::egui;
 use macroquad::prelude::*;
+use slotmap::{DefaultKey, HopSlotMap, Key, SlotMap};
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
@@ -31,11 +33,28 @@ impl MouseMode {
     }
 }
 
+struct UID {
+
+}
+
+struct PawnManager {
+    pawns: SlotMap<DefaultKey, Pawn>,
+}
+impl PawnManager {
+    pub fn new() -> Self {
+        Self { pawns: SlotMap::new() }
+    }
+
+    pub fn add(&mut self, pawn: Pawn) -> DefaultKey {
+        self.pawns.insert(pawn)
+    }
+}
+
 #[macroquad::main("BasicShapes")]
 async fn main() {
     let mut action_mode = MouseMode::Spawn;
 
-    let mut pawns: Vec<Pawn> = vec![];
+    let mut pawn_manager = PawnManager::new();
     let mut camera = Camera::new();
 
     let cavalry = load_texture("assets/infantry.png").await.unwrap();
@@ -81,16 +100,16 @@ async fn main() {
         // draw_rectangle(sn_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
         draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
-        for ele in pawns.iter() {
-            ele.draw();
+        for ele in pawn_manager.pawns.iter() {
+            ele.1.draw();
         }
 
         match action_mode {
             MouseMode::Spawn => {
-                spawn_pawn(&mut pawns, &camera, &cavalry);
+                spawn_pawn(&mut pawn_manager, &camera, &cavalry);
             }
             MouseMode::Drag => {
-                for pawn in pawns.iter() {
+                for pawn in pawn_manager.iter() {
                     pawn.contains_point(camera.screen_to_world(mouse_position().into()));
                 }
             }
@@ -130,12 +149,12 @@ fn pick_pawn(pawns: &Vec<Pawn>, camera: &Camera) {
     }
 }
 
-fn spawn_pawn(pawns: &mut Vec<Pawn>, camera: &Camera, sprite: &Sprite) {
+fn spawn_pawn(pawns: &mut PawnManager, camera: &Camera, sprite: &Sprite) {
     if is_mouse_button_pressed(MouseButton::Left) {
         let position = camera.screen_to_world(mouse_position().into());
         let mut pawn = Pawn::new(position, sprite.clone());
         pawn.set_scale(0.1, 0.1);
-        pawns.push(pawn);
+        pawns.add(pawn);
     }
 }
 
