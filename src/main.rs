@@ -13,7 +13,7 @@ use std::vec;
 
 use egui_macroquad::egui;
 use macroquad::prelude::*;
-use slotmap::{DefaultKey, HopSlotMap, Key, SlotMap};
+use slotmap::{DefaultKey, SlotMap, new_key_type};
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
@@ -33,19 +33,17 @@ impl MouseMode {
     }
 }
 
-struct UID {
-
-}
+new_key_type! { pub struct PawnUID; }
 
 struct PawnManager {
-    pawns: SlotMap<DefaultKey, Pawn>,
+    pawns: SlotMap<PawnUID, Pawn>,
 }
 impl PawnManager {
     pub fn new() -> Self {
-        Self { pawns: SlotMap::new() }
+        Self { pawns: SlotMap::with_key() }
     }
 
-    pub fn add(&mut self, pawn: Pawn) -> DefaultKey {
+    pub fn add(&mut self, pawn: Pawn) -> PawnUID {
         self.pawns.insert(pawn)
     }
 }

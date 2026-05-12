@@ -123,6 +123,10 @@ impl Pawn {
         self.transform.pos.y = y;
     }
 
+    pub fn set_transform(&mut self, transform: Transform) {
+        self.transform = transform;
+    }
+
     pub fn set_scale(&mut self, x: f32, y: f32) {
         self.transform.scale.x = x;
         self.transform.scale.y = y;
