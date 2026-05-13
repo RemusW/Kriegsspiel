@@ -1,8 +1,9 @@
 use std::{default, vec::Splice};
 
+use uuid::Uuid;
 use macroquad::prelude::*;
 
-use crate::PIXELS_PER_UNIT;
+use crate::{PIXELS_PER_UNIT, World};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Pivot {
@@ -105,16 +106,18 @@ impl Sprite {
 pub struct Pawn {
     transform: Transform,
     sprite: Sprite,
+    pub uid: Uuid,
 }
 
 impl Pawn {
-    pub fn new(position: Vec2, sprite: Sprite) -> Self {
+    pub fn new(world: &mut World, position: Vec2, sprite: Sprite) -> Self {
         Pawn {
             transform: Transform {
                 pos: position,
                 ..Default::default()
             },
             sprite: sprite,
+            uid: Uuid::new_v4(),
         }
     }
 

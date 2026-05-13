@@ -6,4 +6,11 @@ edition = "2024"
 [dependencies]
 egui-macroquad = "0.17.3"
 macroquad = "0.4.14"
-slotmap = "1.1.1"
+
+
+[dependencies.uuid]
+version = "1.23.1"
+# Lets you generate random UUIDs
+features = [
+    "v4",
+]

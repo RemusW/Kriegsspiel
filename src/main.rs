@@ -3,17 +3,18 @@
 #![allow(dead_code)]
 
 mod camera;
-mod sprite;
 mod command;
+mod sprite;
 
 use crate::camera::Camera;
 use crate::sprite::{Pawn, Sprite};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::vec;
 
+use uuid::Uuid;
 use egui_macroquad::egui;
 use macroquad::prelude::*;
-use slotmap::{DefaultKey, SlotMap, new_key_type};
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
@@ -33,18 +34,18 @@ impl MouseMode {
     }
 }
 
-new_key_type! { pub struct PawnUID; }
-
 struct PawnManager {
-    pawns: SlotMap<PawnUID, Pawn>,
+    pawn_map: HashMap<Uuid, Pawn>,
 }
 impl PawnManager {
     pub fn new() -> Self {
-        Self { pawns: SlotMap::with_key() }
+        Self {
+            pawn_map: HashMap::new(),
+        }
     }
 
-    pub fn add(&mut self, pawn: Pawn) -> PawnUID {
-        self.pawns.insert(pawn)
+    pub fn add(&mut self, pawn: Pawn) {
+        self.pawn_map.insert(pawn.uid, pawn);
     }
 }
 
@@ -52,12 +53,13 @@ impl PawnManager {
 async fn main() {
     let mut action_mode = MouseMode::Spawn;
 
-    let mut pawn_manager = PawnManager::new();
+    let mut world = World::new();
     let mut camera = Camera::new();
+    world.camera = Some(camera);
 
     let cavalry = load_texture("assets/infantry.png").await.unwrap();
     cavalry.set_filter(FilterMode::Linear);
-    let mut cavalry = Sprite::new(cavalry);
+    let cavalry = Sprite::new(cavalry);
     // cavalry.set_scale(5.0, 5.0);
 
     let farley = load_texture("assets/farley.png").await.unwrap();
@@ -65,12 +67,14 @@ async fn main() {
     let mut farley = Sprite::new(farley);
     farley.set_size(1000.0, -1000.0);
 
+    world.map = Some(farley);
+
     loop {
         #[cfg(not(target_arch = "wasm32"))]
         if is_key_down(KeyCode::Escape) {
             break;
         }
-        set_camera(&camera.to_macroquad());
+        set_camera(&world.camera.expect("missing camera").to_macroquad());
 
         clear_background(LIGHTGRAY);
 
@@ -87,7 +91,9 @@ async fn main() {
                 });
         });
 
-        farley.draw_default();
+        if let Some(ref map) = world.map {
+            map.draw_default();
+        }
         // cavalry.draw_default();
 
         // draw world grid
@@ -98,16 +104,16 @@ async fn main() {
         // draw_rectangle(sn_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
         draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
-        for ele in pawn_manager.pawns.iter() {
+        for ele in world.pawn_manager.pawn_map.iter() {
             ele.1.draw();
         }
 
         match action_mode {
             MouseMode::Spawn => {
-                spawn_pawn(&mut pawn_manager, &camera, &cavalry);
+                spawn_pawn(&mut world, &camera, &cavalry);
             }
             MouseMode::Drag => {
-                for pawn in pawn_manager.iter() {
+                for (_, pawn) in world.pawn_manager.pawn_map.iter() {
                     pawn.contains_point(camera.screen_to_world(mouse_position().into()));
                 }
             }
@@ -117,7 +123,6 @@ async fn main() {
 
         set_default_camera();
 
-        // Debug information
         draw_text(
             &format!(
                 "Window: {}x{}  |  World units visible: {:.1} x {:.1}",
@@ -133,9 +138,26 @@ async fn main() {
         );
         draw_text(&format!("{:?}", mouse_position()), 10.0, 40.0, 20.0, WHITE);
 
+        // Debug information
         egui_macroquad::draw();
 
         next_frame().await
+    }
+}
+
+struct World {
+    pawn_manager: PawnManager,
+    camera: Option<Camera>,
+    map: Option<Sprite>,
+}
+
+impl World {
+    fn new() -> Self {
+        Self {
+            pawn_manager: PawnManager::new(),
+            camera: None,
+            map: None,
+        }
     }
 }
 
@@ -147,12 +169,12 @@ fn pick_pawn(pawns: &Vec<Pawn>, camera: &Camera) {
     }
 }
 
-fn spawn_pawn(pawns: &mut PawnManager, camera: &Camera, sprite: &Sprite) {
+fn spawn_pawn(world: &mut World, camera: &Camera, sprite: &Sprite) {
     if is_mouse_button_pressed(MouseButton::Left) {
         let position = camera.screen_to_world(mouse_position().into());
-        let mut pawn = Pawn::new(position, sprite.clone());
+        let mut pawn = Pawn::new(world, position, sprite.clone());
         pawn.set_scale(0.1, 0.1);
-        pawns.add(pawn);
+        world.pawn_manager.add(pawn);
     }
 }
 

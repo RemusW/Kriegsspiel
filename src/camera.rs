@@ -1,6 +1,6 @@
 use macroquad::{prelude::*};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Camera {
     pub target: Vec2,
     pub zoom_factor: f32,

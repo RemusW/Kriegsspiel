@@ -1,4 +1,4 @@
-use crate::{PawnUID, sprite::Transform};
+use crate::{ World, sprite::{Pawn, Transform}};
 
 trait Command {
     fn execute(&self);
@@ -30,19 +30,19 @@ struct MoveCommand {
 }
 
 impl MoveCommand {
-    fn new(uid: u32) -> Self {
-
+    fn new(uid: u32, from: Transform, dest: Transform) -> Self {
+        Self {
+            pawn_uid: uid,
+            from,
+            dest,
+        }
     }
 }
 
 impl Command for MoveCommand {
-    fn execute(&self) {
-        
-    }
+    fn execute(&self) {}
 
-    fn undo(&self) {
-        
-    }
+    fn undo(&self) {}
 }
 
 struct CommandManager {
@@ -73,8 +73,9 @@ impl CommandManager {
         }
     }
 
-    pub fn transform_pawn(&mut self, pawn_id: PawnUID, dest: Transform, ctx: &mut GameCommand) {
-        let cmd = MoveCommand::new(pawn_id, dest, ctx);
-        self.execute(GameCommand::Move(cmd), ctx);
+    pub fn transform_pawn(&mut self, world: &mut World, pawn: &Pawn, dest: Transform) {
+        // let pawn_uid = world.pawn_manager.pawn_map.insert_with_key(f)
+        // let cmd = MoveCommand::new(pawn.uid, dest, dest);
+        // self.execute(GameCommand::Move(cmd), ctx);
     }
 }
