@@ -1,7 +1,7 @@
 use std::{default, vec::Splice};
 
-use uuid::Uuid;
 use macroquad::prelude::*;
+use uuid::Uuid;
 
 use crate::{PIXELS_PER_UNIT, World};
 
@@ -104,9 +104,9 @@ impl Sprite {
 }
 
 pub struct Pawn {
-    transform: Transform,
+    pub transform: Transform,
     sprite: Sprite,
-    pub uid: Uuid,
+    uid: Uuid,
 }
 
 impl Pawn {
@@ -133,6 +133,10 @@ impl Pawn {
     pub fn set_scale(&mut self, x: f32, y: f32) {
         self.transform.scale.x = x;
         self.transform.scale.y = y;
+    }
+
+    pub fn get_uid(&self) -> Uuid {
+        self.uid
     }
 
     fn collider(&self) -> Collider {
@@ -204,7 +208,7 @@ impl Collider {
             && self.min.y <= point.y
             && point.y <= self.max.y
     }
-    
+
     pub fn draw_debug(&self) {
         let w = (self.max.x - self.min.x).abs() * 0.05;
         let h = (self.max.y - self.min.y).abs() * 0.05;

@@ -1,81 +1,95 @@
-use crate::{ World, sprite::{Pawn, Transform}};
+use uuid::Uuid;
 
-trait Command {
-    fn execute(&self);
-    fn undo(&self);
-}
+use crate::{
+    PawnManager, World,
+    sprite::{Pawn, Transform},
+};
 
-pub enum GameCommand {
+pub enum UnReCommand {
     Move(MoveCommand),
 }
 
-impl GameCommand {
-    fn execute(&self) {
+impl UnReCommand {
+    fn execute(&self, world: &mut World) {
         match self {
-            GameCommand::Move(cmd) => cmd.execute(),
+            UnReCommand::Move(cmd) => cmd.execute(&mut world.pawn_manager),
         }
     }
 
-    fn undo(&self) {
+    fn undo(&self, world: &mut World) {
         match self {
-            GameCommand::Move(cmd) => cmd.undo(),
+            UnReCommand::Move(cmd) => cmd.undo(&mut world.pawn_manager),
         }
     }
 }
 
-struct MoveCommand {
-    pawn_uid: u32,
+pub struct MoveCommand {
+    pawn_uid: Uuid,
     from: Transform,
     dest: Transform,
 }
 
 impl MoveCommand {
-    fn new(uid: u32, from: Transform, dest: Transform) -> Self {
+    fn new(uid: Uuid, from: Transform, dest: Transform) -> Self {
         Self {
             pawn_uid: uid,
             from,
             dest,
         }
     }
+
+    fn execute(&self, pawn_manager: &mut PawnManager) {
+        let pawn = pawn_manager.pawn_map.get_mut(&self.pawn_uid);
+        if let Some(pawn) = pawn {
+            pawn.set_transform(self.dest.clone());
+        }
+    }
+
+    fn undo(&self, pawn_manager: &mut PawnManager) {
+        let pawn = pawn_manager.pawn_map.get_mut(&self.pawn_uid);
+        if let Some(pawn) = pawn {
+            pawn.set_transform(self.from.clone());
+        }
+    }
 }
 
-impl Command for MoveCommand {
-    fn execute(&self) {}
-
-    fn undo(&self) {}
-}
-
-struct CommandManager {
-    history: Vec<GameCommand>,
-    redo: Vec<GameCommand>,
+pub struct CommandManager {
+    history: Vec<UnReCommand>,
+    redo: Vec<UnReCommand>,
 }
 
 impl CommandManager {
-    fn execute(&mut self, cmd: GameCommand) {
-        cmd.execute();
+    pub fn new() -> Self {
+        Self {
+            history: Vec::default(),
+            redo: Vec::default(),
+        }
+    }
+
+    fn execute(&mut self, cmd: UnReCommand, world: &mut World) {
+        cmd.execute(world);
         self.history.push(cmd);
         self.redo.clear();
     }
 
-    fn undo(&mut self) {
+    fn undo(&mut self, world: &mut World) {
         let cmd = self.history.pop();
         if let Some(cmd) = cmd {
-            cmd.undo();
+            cmd.undo(world);
             self.redo.push(cmd);
         }
     }
 
-    fn redo(&mut self) {
+    fn redo(&mut self, world: &mut World) {
         let cmd = self.redo.pop();
         if let Some(cmd) = cmd {
-            cmd.execute();
+            cmd.execute(world);
             self.history.push(cmd);
         }
     }
 
     pub fn transform_pawn(&mut self, world: &mut World, pawn: &Pawn, dest: Transform) {
-        // let pawn_uid = world.pawn_manager.pawn_map.insert_with_key(f)
-        // let cmd = MoveCommand::new(pawn.uid, dest, dest);
-        // self.execute(GameCommand::Move(cmd), ctx);
+        let cmd = MoveCommand::new(pawn.get_uid(), pawn.transform.clone(), dest);
+        self.execute(UnReCommand::Move(cmd), world);
     }
 }

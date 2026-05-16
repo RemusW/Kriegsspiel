@@ -7,6 +7,7 @@ mod command;
 mod sprite;
 
 use crate::camera::Camera;
+use crate::command::CommandManager;
 use crate::sprite::{Pawn, Sprite};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -45,13 +46,14 @@ impl PawnManager {
     }
 
     pub fn add(&mut self, pawn: Pawn) {
-        self.pawn_map.insert(pawn.uid, pawn);
+        self.pawn_map.insert(pawn.get_uid(), pawn);
     }
 }
 
 #[macroquad::main("BasicShapes")]
 async fn main() {
     let mut action_mode = MouseMode::Spawn;
+    let mut command_manager = CommandManager::new();
 
     let mut world = World::new();
     let mut camera = Camera::new();
@@ -84,7 +86,6 @@ async fn main() {
                 .show(ctx, |ui| {
                     ui.label("Mouse Mode");
                     ui.separator();
-
                     for mode in [MouseMode::Spawn, MouseMode::Drag] {
                         ui.selectable_value(&mut action_mode, mode, mode.label());
                     }
