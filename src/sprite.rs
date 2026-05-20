@@ -103,6 +103,7 @@ impl Sprite {
     }
 }
 
+#[derive(Debug)]
 pub struct Pawn {
     pub transform: Transform,
     sprite: Sprite,
@@ -148,8 +149,8 @@ impl Pawn {
         let collider = self.collider();
         let res = collider.contains_point(point);
         if res {
-            println!("Collision at {:?}", point);
-            println!("{:?}", collider);
+            // println!("Collision at {:?}", point);
+            // println!("{:?}", collider);
             collider.draw_debug();
         }
         res
@@ -164,9 +165,9 @@ impl Pawn {
 
 #[derive(Debug, Clone)]
 pub struct Transform {
-    pos: Vec2,
-    rotation: f32,
-    scale: Vec2,
+    pub pos: Vec2,
+    pub rotation: f32,
+    pub scale: Vec2,
 }
 impl Default for Transform {
     fn default() -> Self {

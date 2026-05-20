@@ -62,7 +62,6 @@ impl Camera {
 
             // Clamp zoom range
             self.zoom_factor = self.zoom_factor.clamp(0.1, 1000.0);
-            println!("zoom: {:?} ", self.zoom_factor);
         }
     }
 }

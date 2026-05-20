@@ -5,35 +5,22 @@
 mod camera;
 mod command;
 mod sprite;
+mod editor;
 
 use crate::camera::Camera;
 use crate::command::CommandManager;
+use crate::editor::{EditorState, ToolMode, SelectionTool};
 use crate::sprite::{Pawn, Sprite};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::vec;
 
-use uuid::Uuid;
 use egui_macroquad::egui;
 use macroquad::prelude::*;
+use uuid::Uuid;
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-enum MouseMode {
-    #[default]
-    Spawn,
-    Drag,
-}
-
-impl MouseMode {
-    fn label(&self) -> &str {
-        match self {
-            MouseMode::Spawn => "Select",
-            MouseMode::Drag => "Move",
-        }
-    }
-}
 
 struct PawnManager {
     pawn_map: HashMap<Uuid, Pawn>,
@@ -52,12 +39,10 @@ impl PawnManager {
 
 #[macroquad::main("BasicShapes")]
 async fn main() {
-    let mut action_mode = MouseMode::Spawn;
-    let mut command_manager = CommandManager::new();
+    let mut editor_state = EditorState::default();
 
+    let mut command_manager = CommandManager::new();
     let mut world = World::new();
-    let mut camera = Camera::new();
-    world.camera = Some(camera);
 
     let cavalry = load_texture("assets/infantry.png").await.unwrap();
     cavalry.set_filter(FilterMode::Linear);
@@ -76,7 +61,7 @@ async fn main() {
         if is_key_down(KeyCode::Escape) {
             break;
         }
-        set_camera(&world.camera.expect("missing camera").to_macroquad());
+        set_camera(&world.camera.to_macroquad());
 
         clear_background(LIGHTGRAY);
 
@@ -86,8 +71,8 @@ async fn main() {
                 .show(ctx, |ui| {
                     ui.label("Mouse Mode");
                     ui.separator();
-                    for mode in [MouseMode::Spawn, MouseMode::Drag] {
-                        ui.selectable_value(&mut action_mode, mode, mode.label());
+                    for mode in [ToolMode::Spawn, ToolMode::Selection] {
+                        ui.selectable_value(&mut editor_state.tool_mode, mode, mode.label());
                     }
                 });
         });
@@ -95,32 +80,22 @@ async fn main() {
         if let Some(ref map) = world.map {
             map.draw_default();
         }
-        // cavalry.draw_default();
 
         // draw world grid
         // draw_grid(camera.target, screen_width() / 2.0, screen_height() / 2.0);
 
         draw_circle(0.0, 0.0, 50.0, WHITE);
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
-        // draw_rectangle(sn_width() - 30.0, screen_height() - 30.0, 15.0, YELLOW);
         draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
+
 
         for ele in world.pawn_manager.pawn_map.iter() {
             ele.1.draw();
         }
 
-        match action_mode {
-            MouseMode::Spawn => {
-                spawn_pawn(&mut world, &camera, &cavalry);
-            }
-            MouseMode::Drag => {
-                for (_, pawn) in world.pawn_manager.pawn_map.iter() {
-                    pawn.contains_point(camera.screen_to_world(mouse_position().into()));
-                }
-            }
-        }
+        editor_state.update(&mut world);
 
-        camera.update();
+        world.camera.update();
 
         set_default_camera();
 
@@ -148,7 +123,7 @@ async fn main() {
 
 struct World {
     pawn_manager: PawnManager,
-    camera: Option<Camera>,
+    camera: Camera,
     map: Option<Sprite>,
 }
 
@@ -156,7 +131,7 @@ impl World {
     fn new() -> Self {
         Self {
             pawn_manager: PawnManager::new(),
-            camera: None,
+            camera: Camera::new(),
             map: None,
         }
     }
@@ -170,9 +145,9 @@ fn pick_pawn(pawns: &Vec<Pawn>, camera: &Camera) {
     }
 }
 
-fn spawn_pawn(world: &mut World, camera: &Camera, sprite: &Sprite) {
+fn spawn_pawn(world: &mut World, sprite: &Sprite) {
     if is_mouse_button_pressed(MouseButton::Left) {
-        let position = camera.screen_to_world(mouse_position().into());
+        let position = world.camera.screen_to_world(mouse_position().into());
         let mut pawn = Pawn::new(world, position, sprite.clone());
         pawn.set_scale(0.1, 0.1);
         world.pawn_manager.add(pawn);
