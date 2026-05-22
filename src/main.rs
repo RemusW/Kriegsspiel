@@ -4,12 +4,12 @@
 
 mod camera;
 mod command;
-mod sprite;
 mod editor;
+mod sprite;
 
 use crate::camera::Camera;
 use crate::command::CommandManager;
-use crate::editor::{EditorState, ToolMode, SelectionTool};
+use crate::editor::{EditorState, SelectionTool, ToolMode};
 use crate::sprite::{Pawn, Sprite};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -20,7 +20,6 @@ use macroquad::prelude::*;
 use uuid::Uuid;
 
 const PIXELS_PER_UNIT: f32 = 1.0;
-
 
 struct PawnManager {
     pawn_map: HashMap<Uuid, Pawn>,
@@ -34,6 +33,24 @@ impl PawnManager {
 
     pub fn add(&mut self, pawn: Pawn) {
         self.pawn_map.insert(pawn.get_uid(), pawn);
+    }
+
+    pub fn get_pawns_from_uid(&self, uids: Vec<Uuid>) -> Vec<&Pawn> {
+        let mut pawns: Vec<&Pawn> = Vec::new();
+        for uid in uids.iter() {
+            if let Some(p) = self.pawn_map.get(uid) {
+                pawns.push(p);
+            }
+        }
+        pawns
+    }
+
+    pub fn get_pawns_from_uid_mut(&mut self, uids: &[Uuid]) -> Vec<&mut Pawn> {
+        self.pawn_map
+            .iter_mut()
+            .filter(|(id, _)| uids.contains(id))
+            .map(|(_, pawn)| pawn)
+            .collect()
     }
 }
 
@@ -71,7 +88,7 @@ async fn main() {
                 .show(ctx, |ui| {
                     ui.label("Mouse Mode");
                     ui.separator();
-                    for mode in [ToolMode::Spawn, ToolMode::Selection] {
+                    for mode in [ToolMode::Spawn, ToolMode::Move] {
                         ui.selectable_value(&mut editor_state.tool_mode, mode, mode.label());
                     }
                 });
@@ -88,12 +105,14 @@ async fn main() {
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
         draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
-
         for ele in world.pawn_manager.pawn_map.iter() {
             ele.1.draw();
         }
 
         editor_state.update(&mut world);
+        if editor_state.tool_mode == ToolMode::Spawn {
+            spawn_pawn(&mut world, &cavalry);
+        }
 
         world.camera.update();
 
