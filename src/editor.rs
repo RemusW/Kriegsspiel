@@ -1,8 +1,9 @@
-use macroquad::prelude::*;
+use macroquad::{miniquad::CursorIcon::Move, prelude::*};
 use uuid::Uuid;
 
 use crate::{
     World,
+    command::{CommandManager, MoveCommand, UnReCommand},
     sprite::{Pawn, Transform},
 };
 
@@ -13,13 +14,25 @@ pub struct EditorState {
 }
 
 impl EditorState {
-    pub fn update(&mut self, world: &mut World) {
+    pub fn update(&mut self, world: &mut World, command_manager: &mut CommandManager) {
         match self.tool_mode {
             ToolMode::Spawn => {
                 // spawn_pawn(&mut world, &cavalry);
             }
             ToolMode::Move => {
-                self.selection.process_pick(world);
+                if let Some(cmd) = self.selection.process_pick(world) {
+                    command_manager.execute(cmd, world);
+                }
+            }
+        }
+        if is_key_down(KeyCode::LeftControl) {
+            if !is_key_down(KeyCode::LeftShift) && is_key_pressed(KeyCode::Z) {
+                println!("UNDOING");
+                command_manager.undo(world);
+            }
+            if is_key_down(KeyCode::LeftShift) && is_key_pressed(KeyCode::Z) {
+                println!("REDOING");
+                command_manager.redo(world);
             }
         }
     }
@@ -50,34 +63,58 @@ pub struct SelectionTool {
 }
 
 impl SelectionTool {
-    fn process_pick(&mut self, world: &mut World) {
+    fn process_pick(&mut self, world: &mut World) -> Option<UnReCommand> {
         if is_mouse_button_pressed(MouseButton::Left) {
             // save transform state of mouse and picked objects
             self.get_selected_pawns(world);
-            self.pre_picked_center = mouse_position().into();
-            self.save_pre_transform(world);
+            if self.selections.is_empty() {
+                self.pre_transforms.clear();
+                println!("mouse pressed: clearing seleciton");
+            } else {
+                self.pre_picked_center = world.camera.screen_to_world(mouse_position().into());
+                self.save_pre_transform(world);
+            }
         }
         if is_mouse_button_down(MouseButton::Left) {
             // update mouse center and move all selected objects relative to anchor
-            let selected_pawns = world.pawn_manager.get_pawns_from_uid_mut(&self.selections);
-            let screen_pos: Vec2 = vec2(
-                self.pre_picked_center.x + mouse_position().0,
-                self.pre_picked_center.y + mouse_position().1,
-            );
-            let new_pos = world.camera.screen_to_world(screen_pos);
-            for pawn in selected_pawns {
-                let pos = pawn.transform.pos.clone();
-                // let new_pos = (pos.x + delta.x, pos.y + delta.y);
-                pawn.set_position(new_pos.x, new_pos.y);
-                println!("{:?} \n {:?}", pos, new_pos);
+            let mut selected_pawns = world.pawn_manager.get_pawns_from_uid_mut(&self.selections);
+            let mouse_pos = world.camera.screen_to_world(mouse_position().into());
+            let offset = mouse_pos - self.pre_picked_center;
+            for (i, pawn) in selected_pawns.iter_mut().enumerate() {
+                let pos = self.pre_transforms[i].pos + offset;
+                pawn.set_position(pos.x, pos.y);
+                // println!("{:?} \n {:?}\n", pos, offset);
             }
         }
         if is_mouse_button_released(MouseButton::Left) {
             // Create the TransformCommand and record it
+            let selected_pawns = world.pawn_manager.get_pawns_from_uid_mut(&self.selections);
+            let moves: Vec<(Uuid, Transform, Transform)> = selected_pawns
+                .iter()
+                .enumerate()
+                .map(|(i, pawn)| {
+                    (
+                        pawn.get_uid(),
+                        self.pre_transforms[i].clone(),
+                        pawn.transform.clone(),
+                    )
+                })
+                .collect();
+            let move_cmd = CommandManager::transform_pawn(moves);
+            // for (i, pawn) in selected_pawns.iter().enumerate() {
+            //     let move_command =
+            //         CommandManager::transform_pawn(pawn, self.pre_transforms[i].clone());
+            //     self.pre_transforms.clear();
+            //     return Some(UnReCommand::Move(move_command));
+            // }
+            self.pre_transforms.clear();
+            return Some(UnReCommand::Move(move_cmd));
         }
+        None
     }
 
     fn get_selected_pawns(&mut self, world: &mut World) {
+        self.selections.clear();
         for (_, pawn) in world.pawn_manager.pawn_map.iter_mut() {
             let contains =
                 pawn.contains_point(world.camera.screen_to_world(mouse_position().into()));

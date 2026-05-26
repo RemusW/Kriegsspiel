@@ -21,34 +21,47 @@ impl UnReCommand {
             UnReCommand::Move(cmd) => cmd.undo(&mut world.pawn_manager),
         }
     }
+
+    fn label(&self) {
+        match self {
+            UnReCommand::Move(cmd) => println!("UnReCommand::Move"),
+        }
+    }
 }
 
 pub struct MoveCommand {
-    pawn_uid: Uuid,
-    from: Transform,
-    dest: Transform,
+    // pawn_uid: Uuid,
+    // from: Transform,
+    // dest: Transform,
+    saved_pawns: Vec<(Uuid, Transform, Transform)>,
 }
 
 impl MoveCommand {
     fn new(uid: Uuid, from: Transform, dest: Transform) -> Self {
         Self {
-            pawn_uid: uid,
-            from,
-            dest,
+            saved_pawns: vec![(uid, from, dest)],
         }
     }
 
+    fn batch(moves: Vec<(Uuid, Transform, Transform)>) -> Self {
+        Self { saved_pawns: moves }
+    }
+
     fn execute(&self, pawn_manager: &mut PawnManager) {
-        let pawn = pawn_manager.pawn_map.get_mut(&self.pawn_uid);
-        if let Some(pawn) = pawn {
-            pawn.set_transform(self.dest.clone());
+        for (pawn_uid, _, dest) in self.saved_pawns.iter() {
+            let pawn = pawn_manager.pawn_map.get_mut(&pawn_uid);
+            if let Some(pawn) = pawn {
+                pawn.set_transform(dest.clone());
+            }
         }
     }
 
     fn undo(&self, pawn_manager: &mut PawnManager) {
-        let pawn = pawn_manager.pawn_map.get_mut(&self.pawn_uid);
-        if let Some(pawn) = pawn {
-            pawn.set_transform(self.from.clone());
+        for (pawn_uid, from, _) in self.saved_pawns.iter() {
+            let pawn = pawn_manager.pawn_map.get_mut(&pawn_uid);
+            if let Some(pawn) = pawn {
+                pawn.set_transform(from.clone());
+            }
         }
     }
 }
@@ -66,13 +79,13 @@ impl CommandManager {
         }
     }
 
-    fn execute(&mut self, cmd: UnReCommand, world: &mut World) {
+    pub fn execute(&mut self, cmd: UnReCommand, world: &mut World) {
         cmd.execute(world);
         self.history.push(cmd);
         self.redo.clear();
     }
 
-    fn undo(&mut self, world: &mut World) {
+    pub fn undo(&mut self, world: &mut World) {
         let cmd = self.history.pop();
         if let Some(cmd) = cmd {
             cmd.undo(world);
@@ -80,7 +93,7 @@ impl CommandManager {
         }
     }
 
-    fn redo(&mut self, world: &mut World) {
+    pub fn redo(&mut self, world: &mut World) {
         let cmd = self.redo.pop();
         if let Some(cmd) = cmd {
             cmd.execute(world);
@@ -88,8 +101,9 @@ impl CommandManager {
         }
     }
 
-    pub fn transform_pawn(&mut self, world: &mut World, pawn: &Pawn, dest: Transform) {
-        let cmd = MoveCommand::new(pawn.get_uid(), pawn.transform.clone(), dest);
-        self.execute(UnReCommand::Move(cmd), world);
+    pub fn transform_pawn(moves: Vec<(Uuid, Transform, Transform)>) -> MoveCommand {
+        // MoveCommand::new(pawn.get_uid(), from, pawn.transform.clone())
+        MoveCommand::batch(moves)
+        // self.execute(UnReCommand::Move(cmd), world);
     }
 }

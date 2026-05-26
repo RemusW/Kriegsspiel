@@ -109,7 +109,7 @@ async fn main() {
             ele.1.draw();
         }
 
-        editor_state.update(&mut world);
+        editor_state.update(&mut world, &mut command_manager);
         if editor_state.tool_mode == ToolMode::Spawn {
             spawn_pawn(&mut world, &cavalry);
         }
