@@ -61,7 +61,7 @@ impl Sprite {
         self.custom_size = Some(vec2(x, y));
     }
 
-    pub fn world_size(&self) -> Vec2 {
+    pub fn border(&self) -> Vec2 {
         let size = self
             .custom_size
             .unwrap_or(vec2(self.texture.width(), self.texture.height()));
@@ -69,7 +69,7 @@ impl Sprite {
     }
 
     pub fn draw_default(&self) {
-        let model_size = self.world_size();
+        let model_size = self.border();
         let offset = self.pivot.offset(model_size);
 
         draw_texture_ex(
@@ -86,7 +86,7 @@ impl Sprite {
     }
 
     pub fn draw(&self, transform: &Transform) {
-        let model_size = self.world_size() * transform.scale;
+        let model_size = self.border() * transform.scale;
         let offset = self.pivot.offset(model_size);
 
         draw_texture_ex(
@@ -161,6 +161,22 @@ impl Pawn {
         // draw_rectangle(translation.x, translation.y, 100.0, 100.0, RED);
         self.sprite.draw(&self.transform);
     }
+
+    pub fn draw_highlight(&self) {
+        let t = &self.transform;
+        let size = self.sprite.border() * t.scale * 1.05;
+        draw_rectangle_ex(
+            t.pos.x,
+            t.pos.y,
+            size.x,
+            size.y,
+            DrawRectangleParams {
+                offset: vec2(0.5, 0.5),
+                color: YELLOW,
+                ..Default::default()
+            },
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -195,7 +211,7 @@ impl Collider {
     pub fn new_from_pawn(pawn: &Pawn) -> Self {
         let pos = pawn.transform.pos;
         let scale = pawn.transform.scale;
-        let size = pawn.sprite.world_size();
+        let size = pawn.sprite.border();
         let scaled_size = size / 2.0 * scale;
         Self {
             min: Vec2::new(pos.x - scaled_size.x, pos.y - scaled_size.y),
@@ -218,6 +234,6 @@ impl Collider {
         let w = (self.max.x - self.min.x).abs() * 1.1;
         let h = (self.max.y - self.min.y).abs() * 1.1;
 
-        draw_rectangle(pos.x, pos.y, w, h, YELLOW);
+        // draw_rectangle(pos.x, pos.y, w, h, YELLOW);
     }
 }

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::vec;
 
 use egui_macroquad::egui;
+use egui_macroquad::egui::Key::D;
 use macroquad::prelude::*;
 use uuid::Uuid;
 
@@ -101,17 +102,23 @@ async fn main() {
         // draw world grid
         // draw_grid(camera.target, screen_width() / 2.0, screen_height() / 2.0);
 
+        editor_state.update(&mut world, &mut command_manager);
+        if editor_state.tool_mode == ToolMode::Spawn {
+            spawn_pawn(&mut world, &cavalry);
+        }
+
         draw_circle(0.0, 0.0, 50.0, WHITE);
         draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
         draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
-        for ele in world.pawn_manager.pawn_map.iter() {
-            ele.1.draw();
+        // Draw highlight box around pawn if selected
+        let pawns = editor_state.selection.get_selected_pawns(&world);
+        for pawn in pawns.iter() {
+            pawn.draw_highlight();
         }
 
-        editor_state.update(&mut world, &mut command_manager);
-        if editor_state.tool_mode == ToolMode::Spawn {
-            spawn_pawn(&mut world, &cavalry);
+        for ele in world.pawn_manager.pawn_map.iter() {
+            ele.1.draw();
         }
 
         world.camera.update();

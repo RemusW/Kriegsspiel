@@ -66,7 +66,7 @@ impl SelectionTool {
     fn process_pick(&mut self, world: &mut World) -> Option<UnReCommand> {
         if is_mouse_button_pressed(MouseButton::Left) {
             // save transform state of mouse and picked objects
-            self.get_selected_pawns(world);
+            self.update_selected_pawns(world);
             if self.selections.is_empty() {
                 self.pre_transforms.clear();
                 println!("mouse pressed: clearing seleciton");
@@ -101,19 +101,13 @@ impl SelectionTool {
                 })
                 .collect();
             let move_cmd = CommandManager::transform_pawn(moves);
-            // for (i, pawn) in selected_pawns.iter().enumerate() {
-            //     let move_command =
-            //         CommandManager::transform_pawn(pawn, self.pre_transforms[i].clone());
-            //     self.pre_transforms.clear();
-            //     return Some(UnReCommand::Move(move_command));
-            // }
             self.pre_transforms.clear();
             return Some(UnReCommand::Move(move_cmd));
         }
         None
     }
 
-    fn get_selected_pawns(&mut self, world: &mut World) {
+    fn update_selected_pawns(&mut self, world: &mut World) {
         self.selections.clear();
         for (_, pawn) in world.pawn_manager.pawn_map.iter_mut() {
             let contains =
@@ -122,6 +116,12 @@ impl SelectionTool {
                 self.selections.push(pawn.get_uid());
             }
         }
+    }
+
+    pub fn get_selected_pawns<'a>(&self, world: &'a World) -> Vec<&'a Pawn> {
+        world
+            .pawn_manager
+            .get_pawns_from_uid(self.selections.clone())
     }
 
     fn save_pre_transform(&mut self, world: &mut World) {
