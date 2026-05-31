@@ -108,13 +108,41 @@ impl SelectionTool {
     }
 
     fn update_selected_pawns(&mut self, world: &mut World) {
-        self.selections.clear();
+        let mut cur_picked: Vec<Uuid> = Vec::new();
         for (_, pawn) in world.pawn_manager.pawn_map.iter_mut() {
             let contains =
                 pawn.contains_point(world.camera.screen_to_world(mouse_position().into()));
             if contains {
-                self.selections.push(pawn.get_uid());
+                cur_picked.push(pawn.get_uid());
             }
+        }
+
+        if cur_picked.is_empty() {
+            self.selections.clear();
+            return;
+        }
+
+        // Additive select
+        if is_key_down(KeyCode::LeftShift) {
+            for uid in cur_picked.iter() {
+                if !self.selections.contains(uid) {
+                    self.selections.push(*uid);
+                }
+            }
+            return;
+        }
+
+        // Single select
+        let mut already_selected = false;
+        for uid in cur_picked.iter() {
+            if self.selections.contains(uid) {
+                already_selected = true;
+                break;
+            }
+        }
+        if !already_selected {
+            self.selections.clear();
+            self.selections.append(&mut cur_picked);
         }
     }
 
