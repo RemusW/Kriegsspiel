@@ -1,11 +1,12 @@
 use std::{default, vec::Splice};
 
 use macroquad::prelude::*;
+use serde::Serialize;
 use uuid::Uuid;
 
-use crate::{PIXELS_PER_UNIT, World};
+use crate::{PIXELS_PER_UNIT, World, asset::{AssetStore, Handle}};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize)]
 pub enum Pivot {
     #[default]
     Center,
@@ -33,8 +34,10 @@ pub enum SpriteImageMode {
     Fill,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Sprite {
+    handle: Handle<Texture2D>,
+    #[serde(skip)]
     texture: Texture2D,
     custom_size: Option<Vec2>,
     pivot: Pivot,
@@ -49,9 +52,11 @@ pub struct Sprite {
 // }
 
 impl Sprite {
-    pub fn new(texture: Texture2D) -> Self {
+    pub fn new(handle: Handle<Texture2D>, asset_store: &AssetStore) -> Self {
+        let tex = asset_store.get_texture(&handle.name);
         Self {
-            texture: texture,
+            handle: handle,
+            texture: tex.clone(),
             pivot: Pivot::Center,
             custom_size: None,
         }

@@ -6,7 +6,10 @@ mod camera;
 mod command;
 mod editor;
 mod sprite;
+mod seralize;
+mod asset;
 
+use crate::asset::AssetStore;
 use crate::camera::Camera;
 use crate::command::CommandManager;
 use crate::editor::{EditorState, SelectionTool, ToolMode};
@@ -16,7 +19,7 @@ use std::collections::HashMap;
 use std::vec;
 
 use egui_macroquad::egui;
-use egui_macroquad::egui::Key::D;
+use egui_macroquad::egui::Key::{D, O};
 use macroquad::prelude::*;
 use uuid::Uuid;
 
@@ -61,20 +64,24 @@ async fn main() {
 
     let mut command_manager = CommandManager::new();
     let mut world = World::new();
+    let mut asset_store = AssetStore::default();
 
-    let cavalry = load_texture("assets/infantry.png").await.unwrap();
-    cavalry.set_filter(FilterMode::Linear);
-    let cavalry = Sprite::new(cavalry);
+    let cavalry = asset_store.load_texture("cavalry", "assets/cavalry.png");
+    let farley = asset_store.load_texture("farley", "assets/farley.png");
+    asset_store.process_pending().await;
+
+    let cavalry = Sprite::new(cavalry, &asset_store);
     // cavalry.set_scale(5.0, 5.0);
 
-    let farley = load_texture("assets/farley.png").await.unwrap();
-    farley.set_filter(FilterMode::Linear);
-    let mut farley = Sprite::new(farley);
+    let mut farley = Sprite::new(farley, &asset_store);
     farley.set_size(1000.0, -1000.0);
 
     world.map = Some(farley);
+    
 
     loop {
+        asset_store.process_pending().await;
+
         #[cfg(not(target_arch = "wasm32"))]
         if is_key_down(KeyCode::Escape) {
             break;
