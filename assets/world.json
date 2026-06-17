@@ -1,0 +1,113 @@
+{
+  "pawn_manager": {
+    "pawn_map": {
+      "858ac9bf-ca56-4554-8dca-42d8647315d9": {
+        "transform": {
+          "pos": [
+            -131.14444,
+            23.649004
+          ],
+          "rotation": 0.0,
+          "scale": [
+            0.1,
+            0.1
+          ]
+        },
+        "sprite": {
+          "handle": {
+            "uuid": "af17b2ce-1040-47bf-96d0-25141332d454",
+            "name": "cavalry"
+          },
+          "custom_size": null,
+          "pivot": "Center"
+        },
+        "uid": "858ac9bf-ca56-4554-8dca-42d8647315d9"
+      },
+      "c9e36c7b-9945-472a-b7ea-eb5c63f5c02c": {
+        "transform": {
+          "pos": [
+            -107.49545,
+            -70.947014
+          ],
+          "rotation": 0.0,
+          "scale": [
+            0.1,
+            0.1
+          ]
+        },
+        "sprite": {
+          "handle": {
+            "uuid": "af17b2ce-1040-47bf-96d0-25141332d454",
+            "name": "cavalry"
+          },
+          "custom_size": null,
+          "pivot": "Center"
+        },
+        "uid": "c9e36c7b-9945-472a-b7ea-eb5c63f5c02c"
+      },
+      "75a7f514-724a-4c80-ab69-994304deb08c": {
+        "transform": {
+          "pos": [
+            7.8830094,
+            -37.98172
+          ],
+          "rotation": 0.0,
+          "scale": [
+            0.1,
+            0.1
+          ]
+        },
+        "sprite": {
+          "handle": {
+            "uuid": "af17b2ce-1040-47bf-96d0-25141332d454",
+            "name": "cavalry"
+          },
+          "custom_size": null,
+          "pivot": "Center"
+        },
+        "uid": "75a7f514-724a-4c80-ab69-994304deb08c"
+      },
+      "3e0bde2d-3167-41cd-9ab9-72ca818b7e20": {
+        "transform": {
+          "pos": [
+            -245.80627,
+            111.078636
+          ],
+          "rotation": 0.0,
+          "scale": [
+            0.1,
+            0.1
+          ]
+        },
+        "sprite": {
+          "handle": {
+            "uuid": "af17b2ce-1040-47bf-96d0-25141332d454",
+            "name": "cavalry"
+          },
+          "custom_size": null,
+          "pivot": "Center"
+        },
+        "uid": "3e0bde2d-3167-41cd-9ab9-72ca818b7e20"
+      }
+    }
+  },
+  "camera": {
+    "target": [
+      0.0,
+      0.0
+    ],
+    "zoom_factor": 429.98184,
+    "orthographic_size": 1.0
+  },
+  "map": {
+    "handle": {
+      "uuid": "36aef016-a92b-4b05-8111-2d1ec3dcbfd7",
+      "name": "farley"
+    },
+    "custom_size": [
+      1000.0,
+      -1000.0
+    ],
+    "pivot": "Center"
+  }
+}

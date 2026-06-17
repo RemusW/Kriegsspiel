@@ -1,6 +1,7 @@
 use macroquad::{prelude::*};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Camera {
     pub target: Vec2,
     pub zoom_factor: f32,

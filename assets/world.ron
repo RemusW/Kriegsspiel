@@ -1,0 +1,83 @@
+(
+    pawn_manager: (
+        pawn_map: {
+            "0b82c7b6-9901-44bd-ad64-b8fa587b3a76": (
+                transform: (
+                    pos: (-32.166668, 7.833335),
+                    rotation: 0.0,
+                    scale: (0.1, 0.1),
+                ),
+                sprite: (
+                    handle: (
+                        uuid: "575f728b-d23c-48d8-89b7-82c786e888fd",
+                        name: "cavalry",
+                    ),
+                    custom_size: None,
+                    pivot: Center,
+                ),
+                uid: "0b82c7b6-9901-44bd-ad64-b8fa587b3a76",
+            ),
+            "d49db5d8-e2e0-466f-94e3-732e6c497f17": (
+                transform: (
+                    pos: (22.600004, 8.400002),
+                    rotation: 0.0,
+                    scale: (0.1, 0.1),
+                ),
+                sprite: (
+                    handle: (
+                        uuid: "575f728b-d23c-48d8-89b7-82c786e888fd",
+                        name: "cavalry",
+                    ),
+                    custom_size: None,
+                    pivot: Center,
+                ),
+                uid: "d49db5d8-e2e0-466f-94e3-732e6c497f17",
+            ),
+            "6b3aacaf-f8d8-479c-88c1-cc6f4536c09b": (
+                transform: (
+                    pos: (41.499996, -21.499998),
+                    rotation: 0.0,
+                    scale: (0.1, 0.1),
+                ),
+                sprite: (
+                    handle: (
+                        uuid: "575f728b-d23c-48d8-89b7-82c786e888fd",
+                        name: "cavalry",
+                    ),
+                    custom_size: None,
+                    pivot: Center,
+                ),
+                uid: "6b3aacaf-f8d8-479c-88c1-cc6f4536c09b",
+            ),
+            "6a1361cf-a39e-49d5-b1de-e23112f71aea": (
+                transform: (
+                    pos: (-65.200005, 31.400007),
+                    rotation: 0.0,
+                    scale: (0.1, 0.1),
+                ),
+                sprite: (
+                    handle: (
+                        uuid: "575f728b-d23c-48d8-89b7-82c786e888fd",
+                        name: "cavalry",
+                    ),
+                    custom_size: None,
+                    pivot: Center,
+                ),
+                uid: "6a1361cf-a39e-49d5-b1de-e23112f71aea",
+            ),
+        },
+    ),
+    camera: (
+        target: (0.0, 0.0),
+        zoom_factor: 120.00001,
+        orthographic_size: 1.0,
+    ),
+    map: Some((
+        handle: (
+            uuid: "14478ab7-905f-4342-897b-2b6505d4bf58",
+            name: "farley",
+        ),
+        custom_size: Some((1000.0, -1000.0)),
+        pivot: Center,
+    )),
+)

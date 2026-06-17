@@ -5,7 +5,7 @@ use std::{
 };
 
 use macroquad::{prelude::*, ui::widgets::Texture};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -16,7 +16,7 @@ pub struct Asset<T: Clone> {
     pub source_path: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handle<T> {
     pub uuid: Uuid,
     pub name: String,

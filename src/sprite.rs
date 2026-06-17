@@ -1,12 +1,12 @@
 use std::{default, vec::Splice};
 
 use macroquad::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{PIXELS_PER_UNIT, World, asset::{AssetStore, Handle}};
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub enum Pivot {
     #[default]
     Center,
@@ -34,10 +34,10 @@ pub enum SpriteImageMode {
     Fill,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sprite {
     handle: Handle<Texture2D>,
-    #[serde(skip)]
+    #[serde(skip, default = "Texture2D::empty")]
     texture: Texture2D,
     custom_size: Option<Vec2>,
     pivot: Pivot,
@@ -60,6 +60,10 @@ impl Sprite {
             pivot: Pivot::Center,
             custom_size: None,
         }
+    }
+
+    pub fn hydrate(&mut self, asset_store: &AssetStore) {
+        self.texture = asset_store.get_texture(&self.handle.name);
     }
 
     pub fn set_size(&mut self, x: f32, y: f32) {
@@ -108,7 +112,7 @@ impl Sprite {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Pawn {
     pub transform: Transform,
     sprite: Sprite,
@@ -184,7 +188,7 @@ impl Pawn {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transform {
     pub pos: Vec2,
     pub rotation: f32,

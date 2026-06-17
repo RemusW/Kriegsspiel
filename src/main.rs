@@ -21,10 +21,12 @@ use std::vec;
 use egui_macroquad::egui;
 use egui_macroquad::egui::Key::{D, O};
 use macroquad::prelude::*;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const PIXELS_PER_UNIT: f32 = 1.0;
 
+#[derive(Debug, Serialize, Deserialize)]
 struct PawnManager {
     pawn_map: HashMap<Uuid, Pawn>,
 }
@@ -90,6 +92,7 @@ async fn main() {
 
         clear_background(LIGHTGRAY);
 
+        let mut save_world = false;
         egui_macroquad::ui(|ctx| {
             egui::Window::new("Actions")
                 .resizable(false)
@@ -99,8 +102,32 @@ async fn main() {
                     for mode in [ToolMode::Spawn, ToolMode::Move] {
                         ui.selectable_value(&mut editor_state.tool_mode, mode, mode.label());
                     }
+                    ui.separator();
+                    if ui.button("Save World").clicked() {
+                        save_world = true;
+                    }
                 });
         });
+
+        if save_world {
+            // JSON
+            // match serde_json::to_string_pretty(&world) {
+            //     Ok(data) => match std::fs::write("assets/world.json", data) {
+            //         Ok(()) => println!("Saved world to assets/world.json"),
+            //         Err(e) => eprintln!("Failed to write world: {e}"),
+            //     },
+            //     Err(e) => eprintln!("Failed to serialize world: {e}"),
+            // }
+
+            // RON — comment out the JSON block above and uncomment this to switch
+            match ron::ser::to_string_pretty(&world, ron::ser::PrettyConfig::default()) {
+                Ok(data) => match std::fs::write("assets/world.ron", data) {
+                    Ok(()) => println!("Saved world to assets/world.ron"),
+                    Err(e) => eprintln!("Failed to write world: {e}"),
+                },
+                Err(e) => eprintln!("Failed to serialize world: {e}"),
+            }
+        }
 
         if let Some(ref map) = world.map {
             map.draw_default();
@@ -154,6 +181,7 @@ async fn main() {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 struct World {
     pawn_manager: PawnManager,
     camera: Camera,
