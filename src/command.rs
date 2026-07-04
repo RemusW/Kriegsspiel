@@ -5,6 +5,7 @@ use crate::{
     sprite::{Pawn, Transform},
 };
 
+#[derive(Debug)]
 pub enum UnReCommand {
     Move(MoveCommand),
 }
@@ -29,6 +30,7 @@ impl UnReCommand {
     }
 }
 
+#[derive(Debug)]
 pub struct MoveCommand {
     // pawn_uid: Uuid,
     // from: Transform,
@@ -66,6 +68,7 @@ impl MoveCommand {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct CommandManager {
     history: Vec<UnReCommand>,
     redo: Vec<UnReCommand>,

@@ -1,4 +1,4 @@
-use macroquad::{prelude::*};
+use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -8,15 +8,17 @@ pub struct Camera {
     orthographic_size: f32,
 }
 
-impl Camera {
-    pub fn new() -> Self {
+impl Default for Camera {
+    fn default() -> Self {
         Self {
             target: Vec2::ZERO,
             zoom_factor: 100.0,
             orthographic_size: 1.0,
         }
     }
+}
 
+impl Camera {
     pub fn to_macroquad(&self) -> Camera2D {
         let ppu = screen_height() / (self.orthographic_size * self.zoom_factor);
         let half_w = screen_width() / (2.0 * ppu);
