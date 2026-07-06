@@ -11,7 +11,8 @@ use crate::{AppContext, PIXELS_PER_UNIT, spawn_pawn};
 // #[derive(Default)]
 enum AppState {
     Menu(Menu),
-    Editor(Editor),
+    EditorLoad(Editor),
+    EditorEmpty(Editor),
 }
 
 impl Default for AppState {
@@ -21,7 +22,7 @@ impl Default for AppState {
 }
 
 pub struct SceneManager {
-    pub app_state: AppState,
+    app_state: AppState,
 }
 
 impl SceneManager {
@@ -34,18 +35,20 @@ impl SceneManager {
     pub fn run(&mut self, ctx: &mut AppContext) {
         let next_scene = match &mut self.app_state {
             AppState::Menu(menu) => menu.update(),
-            AppState::Editor(editor) => editor.update(ctx),
+            AppState::EditorLoad(editor) => editor.update(ctx),
+            AppState::EditorEmpty(editor) => editor.update(ctx),
         };
 
         if let Some(scene) = next_scene {
-            self.transition(scene);
+            self.transition(scene, ctx);
         }
     }
 
-    fn transition(&mut self, new_state: AppState) {
+    fn transition(&mut self, new_state: AppState, ctx: &mut AppContext) {
         match &new_state {
             AppState::Menu(menu) => menu.enter(),
-            AppState::Editor(editor) => editor.enter(),
+            AppState::EditorLoad(editor) => editor.enter(),
+            AppState::EditorEmpty(editor) => editor.debug_enter(ctx),
         }
         self.app_state = new_state;
     }
@@ -71,7 +74,7 @@ impl Menu {
             .size(button_size)
             .ui(&mut root_ui())
         {
-            menu_start();
+            return Some(menu_start());
         }
 
         if widgets::Button::new("Load")
@@ -79,17 +82,24 @@ impl Menu {
             .size(button_size)
             .ui(&mut root_ui())
         {
-            menu_load();
+            return Some(menu_load());
         }
+
         None
     }
 
     pub fn enter(&self) {}
 }
 
-fn menu_start() {}
+fn menu_start() -> AppState {
+    println!("Menu start clicked");
+    AppState::EditorEmpty(Editor::default())
+}
 
-fn menu_load() {}
+fn menu_load() -> AppState {
+    println!("Menu load clicked");
+    AppState::EditorLoad(Editor::default())
+}
 
 #[derive(Default)]
 struct Editor {
@@ -100,11 +110,8 @@ impl Editor {
     pub fn update(&mut self, ctx: &mut AppContext) -> Option<AppState> {
         clear_background(LIGHTGRAY);
 
-        let mut world = &mut ctx.world;
-        let mut command_manager = &mut ctx.command_manger;
-
-        let cavalry = ctx.asset_store.get_handle_from("cavalry");
-        let cavalry = Sprite::new(cavalry, &ctx.asset_store);
+        let world = &mut ctx.world;
+        let command_manager = &mut ctx.command_manger;
 
         let mut save_world = false;
         egui_macroquad::ui(|ectx| {
@@ -124,16 +131,6 @@ impl Editor {
         });
 
         if save_world {
-            // JSON
-            // match serde_json::to_string_pretty(&world) {
-            //     Ok(data) => match std::fs::write("assets/world.json", data) {
-            //         Ok(()) => println!("Saved world to assets/world.json"),
-            //         Err(e) => eprintln!("Failed to write world: {e}"),
-            //     },
-            //     Err(e) => eprintln!("Failed to serialize world: {e}"),
-            // }
-
-            // RON — comment out the JSON block above and uncomment this to switch
             match ron::ser::to_string_pretty(&world, ron::ser::PrettyConfig::default()) {
                 Ok(data) => match std::fs::write("assets/world.ron", data) {
                     Ok(()) => println!("Saved world to assets/world.ron"),
@@ -144,26 +141,30 @@ impl Editor {
         }
 
         if let Some(ref map) = world.map {
-            map.draw_default();
+            map.draw_default(&ctx.asset_store);
         }
 
-        self.editor_state.update(&mut world, &mut command_manager);
+        self.editor_state
+            .update(world, command_manager, &ctx.asset_store);
         if self.editor_state.tool_mode == ToolMode::Spawn {
-            spawn_pawn(&mut world, &cavalry);
+            let cavalry = ctx.asset_store.get_handle_from("cavalry");
+            let cavalry = Sprite::new(cavalry, &ctx.asset_store);
+
+            spawn_pawn(world, &cavalry);
         }
 
-        draw_circle(0.0, 0.0, 50.0, WHITE);
-        draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
-        draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
+        // draw_circle(0.0, 0.0, 50.0, WHITE);
+        // draw_line(40.0, 40.0, 100.0, 200.0, 15.0, BLUE);
+        // draw_line(-0.4, 0.4, -0.8, 0.9, 10.0, BLUE);
 
         // Draw highlight box around pawn if selected
         let pawns = self.editor_state.selection.get_selected_pawns(&world);
         for pawn in pawns.iter() {
-            pawn.draw_highlight();
+            pawn.draw_highlight(&ctx.asset_store);
         }
 
         for ele in world.pawn_manager.pawn_map.iter() {
-            ele.1.draw();
+            ele.1.draw(&ctx.asset_store);
         }
 
         world.camera.update();

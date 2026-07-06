@@ -2,7 +2,8 @@ use macroquad::{miniquad::CursorIcon::Move, prelude::*};
 use uuid::Uuid;
 
 use crate::{
-    World,
+    AppContext, World,
+    asset::AssetStore,
     command::{CommandManager, MoveCommand, UnReCommand},
     sprite::{Pawn, Transform},
 };
@@ -14,13 +15,13 @@ pub struct EditorState {
 }
 
 impl EditorState {
-    pub fn update(&mut self, world: &mut World, command_manager: &mut CommandManager) {
+    pub fn update(&mut self, world: &mut World, command_manager: &mut CommandManager, asset_store: &AssetStore) {
         match self.tool_mode {
             ToolMode::Spawn => {
                 // spawn_pawn(&mut world, &cavalry);
             }
             ToolMode::Move => {
-                if let Some(cmd) = self.selection.process_pick(world) {
+                if let Some(cmd) = self.selection.process_pick(world, asset_store) {
                     command_manager.execute(cmd, world);
                 }
             }
@@ -63,10 +64,10 @@ pub struct SelectionTool {
 }
 
 impl SelectionTool {
-    fn process_pick(&mut self, world: &mut World) -> Option<UnReCommand> {
+    fn process_pick(&mut self, world: &mut World, asset_store: &AssetStore) -> Option<UnReCommand> {
         if is_mouse_button_pressed(MouseButton::Left) {
             // save transform state of mouse and picked objects
-            self.update_selected_pawns(world);
+            self.update_selected_pawns(world, asset_store);
             if self.selections.is_empty() {
                 self.pre_transforms.clear();
                 println!("mouse pressed: clearing seleciton");
@@ -107,11 +108,13 @@ impl SelectionTool {
         None
     }
 
-    fn update_selected_pawns(&mut self, world: &mut World) {
+    fn update_selected_pawns(&mut self, world: &mut World, asset_store: &AssetStore) {
         let mut cur_picked: Vec<Uuid> = Vec::new();
         for (_, pawn) in world.pawn_manager.pawn_map.iter_mut() {
-            let contains =
-                pawn.contains_point(world.camera.screen_to_world(mouse_position().into()));
+            let contains = pawn.contains_point(
+                world.camera.screen_to_world(mouse_position().into()),
+                asset_store,
+            );
             if contains {
                 cur_picked.push(pawn.get_uid());
             }

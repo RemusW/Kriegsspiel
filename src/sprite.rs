@@ -4,7 +4,10 @@ use macroquad::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{PIXELS_PER_UNIT, World, asset::{AssetStore, Handle}};
+use crate::{
+    PIXELS_PER_UNIT, World,
+    asset::{AssetStore, Handle},
+};
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub enum Pivot {
@@ -37,52 +40,47 @@ pub enum SpriteImageMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sprite {
     handle: Handle<Texture2D>,
-    #[serde(skip, default = "Texture2D::empty")]
-    texture: Texture2D,
     custom_size: Option<Vec2>,
     pivot: Pivot,
     // flip_x: bool,
     // flip_y: bool,
 }
 
-// impl Default for Sprite {
-//     fn default() -> Self {
-//         Self { texture: None, custom_size: (), pivot: (), flip_x: (), flip_y: () }
-//     }
-// }
-
 impl Sprite {
     pub fn new(handle: Handle<Texture2D>, asset_store: &AssetStore) -> Self {
-        let tex = asset_store.get_texture(&handle.name);
         Self {
             handle: handle,
-            texture: tex.clone(),
             pivot: Pivot::Center,
             custom_size: None,
         }
     }
 
-    pub fn hydrate(&mut self, asset_store: &AssetStore) {
-        self.texture = asset_store.get_texture(&self.handle.name);
-    }
+    // pub fn hydrate(&mut self, asset_store: &AssetStore) {
+    //     if self.loaded { return }
+    //     if let Some(t) = asset_store.get_texture(&self.handle.name) {
+    //         self.texture = t;
+    //     }
+    // }
 
     pub fn set_size(&mut self, x: f32, y: f32) {
         self.custom_size = Some(vec2(x, y));
     }
 
-    pub fn border(&self) -> Vec2 {
+    pub fn border(&self, asset_store: &AssetStore) -> Vec2 {
+        let tex = asset_store.get_texture(&self.handle.name);
         let size = self
             .custom_size
-            .unwrap_or(vec2(self.texture.width(), self.texture.height()));
+            .unwrap_or(vec2(tex.width(), tex.height()));
         vec2(size.x * PIXELS_PER_UNIT, size.y * PIXELS_PER_UNIT)
     }
 
-    pub fn draw_default(&self) {
-        let model_size = self.border();
+    pub fn draw_default(&self, asset_store: &AssetStore) {
+        let tex = asset_store.get_texture(&self.handle.name);
+        let model_size = self.border(asset_store);
         let offset = self.pivot.offset(model_size);
 
         draw_texture_ex(
-            &self.texture,
+            &tex,
             -1.0 * offset.x,
             -1.0 * offset.y,
             WHITE,
@@ -94,12 +92,13 @@ impl Sprite {
         );
     }
 
-    pub fn draw(&self, transform: &Transform) {
-        let model_size = self.border() * transform.scale;
+    pub fn draw(&self, transform: &Transform, asset_store: &AssetStore) {
+        let tex = asset_store.get_texture(&self.handle.name);
+        let model_size = self.border(asset_store) * transform.scale;
         let offset = self.pivot.offset(model_size);
 
         draw_texture_ex(
-            &self.texture,
+            &tex,
             transform.pos.x - offset.x,
             transform.pos.y - offset.y,
             WHITE,
@@ -149,13 +148,13 @@ impl Pawn {
         self.uid
     }
 
-    fn collider(&self) -> Collider {
+    fn collider(&self, asset_store: &AssetStore) -> Collider {
         // Collider::new(self.transform.pos, self.sprite.world_size())
-        Collider::new_from_pawn(&self)
+        Collider::new_from_pawn(&self, asset_store)
     }
 
-    pub fn contains_point(&self, point: Vec2) -> bool {
-        let collider = self.collider();
+    pub fn contains_point(&self, point: Vec2, asset_store: &AssetStore) -> bool {
+        let collider = self.collider(asset_store);
         let res = collider.contains_point(point);
         if res {
             // println!("Collision at {:?}", point);
@@ -165,15 +164,15 @@ impl Pawn {
         res
     }
 
-    pub fn draw(&self) {
+    pub fn draw(&self, asset_store: &AssetStore) {
         // let translation = self.transform.pos;
         // draw_rectangle(translation.x, translation.y, 100.0, 100.0, RED);
-        self.sprite.draw(&self.transform);
+        self.sprite.draw(&self.transform, asset_store);
     }
 
-    pub fn draw_highlight(&self) {
+    pub fn draw_highlight(&self, asset_store: &AssetStore) {
         let t = &self.transform;
-        let size = self.sprite.border() * t.scale * 1.05;
+        let size = self.sprite.border(asset_store) * t.scale * 1.05;
         draw_rectangle_ex(
             t.pos.x,
             t.pos.y,
@@ -217,10 +216,10 @@ impl Collider {
         }
     }
 
-    pub fn new_from_pawn(pawn: &Pawn) -> Self {
+    pub fn new_from_pawn(pawn: &Pawn, asset_store: &AssetStore) -> Self {
         let pos = pawn.transform.pos;
         let scale = pawn.transform.scale;
-        let size = pawn.sprite.border();
+        let size = pawn.sprite.border(asset_store);
         let scaled_size = size / 2.0 * scale;
         Self {
             min: Vec2::new(pos.x - scaled_size.x, pos.y - scaled_size.y),

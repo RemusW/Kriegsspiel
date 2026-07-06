@@ -34,6 +34,7 @@ async fn main() {
     let mut appctx = AppContext::default();
 
     loop {
+        appctx.asset_store.process_pending().await;
 
         #[cfg(not(target_arch = "wasm32"))]
         if is_key_down(KeyCode::Escape) {
@@ -43,7 +44,6 @@ async fn main() {
 
         scene_manager.run(&mut appctx);
 
-        appctx.asset_store.process_pending().await;
         next_frame().await
     }
 }
@@ -93,14 +93,6 @@ impl PawnManager {
             .filter(|(id, _)| uids.contains(id))
             .map(|(_, pawn)| pawn)
             .collect()
-    }
-}
-
-fn pick_pawn(pawns: &Vec<Pawn>, camera: &Camera) {
-    let mouse_pos = mouse_position();
-    let mouse_pos = camera.screen_to_world(mouse_pos.into());
-    for pawn in pawns.iter() {
-        pawn.contains_point(mouse_pos);
     }
 }
 
