@@ -8,7 +8,7 @@ use crate::{
     sprite::{Pawn, Transform},
 };
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct EditorState {
     pub tool_mode: ToolMode,
     pub selection: SelectionTool,

@@ -1,3 +1,6 @@
+use std::fs::File;
+use std::println;
+
 use egui_macroquad::egui::{self, menu};
 use macroquad::prelude::*;
 use macroquad::ui::{root_ui, widgets};
@@ -6,9 +9,9 @@ use crate::asset::AssetStore;
 use crate::command::CommandManager;
 use crate::editor::{EditorState, ToolMode};
 use crate::sprite::Sprite;
-use crate::{AppContext, PIXELS_PER_UNIT, spawn_pawn};
+use crate::{AppContext, PIXELS_PER_UNIT, World, spawn_pawn};
 
-// #[derive(Default)]
+#[derive(Debug)]
 enum AppState {
     Menu(Menu),
     EditorLoad(Editor),
@@ -45,9 +48,10 @@ impl SceneManager {
     }
 
     fn transition(&mut self, new_state: AppState, ctx: &mut AppContext) {
+        println!("Transition from {:?} -> {:?}", self.app_state, new_state);
         match &new_state {
             AppState::Menu(menu) => menu.enter(),
-            AppState::EditorLoad(editor) => editor.enter(),
+            AppState::EditorLoad(editor) => editor.load_world(ctx),
             AppState::EditorEmpty(editor) => editor.debug_enter(ctx),
         }
         self.app_state = new_state;
@@ -59,7 +63,7 @@ pub enum MenuAction {
     Load,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Menu {}
 
 impl Menu {
@@ -101,7 +105,7 @@ fn menu_load() -> AppState {
     AppState::EditorLoad(Editor::default())
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Editor {
     editor_state: EditorState,
 }
@@ -147,10 +151,10 @@ impl Editor {
         self.editor_state
             .update(world, command_manager, &ctx.asset_store);
         if self.editor_state.tool_mode == ToolMode::Spawn {
-            let cavalry = ctx.asset_store.get_handle_from("cavalry");
-            let cavalry = Sprite::new(cavalry, &ctx.asset_store);
+            // let cavalry = ctx.asset_store.get_handle_from("cavalry");
+            // let cavalry = Sprite::new(cavalry, &ctx.asset_store);
 
-            spawn_pawn(world, &cavalry);
+            // spawn_pawn(world, &cavalry);
         }
 
         // draw_circle(0.0, 0.0, 50.0, WHITE);
@@ -193,6 +197,16 @@ impl Editor {
     }
 
     fn enter(&self) {}
+
+    fn load_world(&self, ctx: &mut AppContext) {
+        let file = File::open("assets/world.ron").expect("Failed opening world.ron");
+        match ron::de::from_reader(file) {
+            Ok(w) => {
+                ctx.world = w;
+            }
+            Err(e) => println!("Failed to deserialize world"),
+        }
+    }
 
     fn debug_enter(&self, ctx: &mut AppContext) {
         let asset_store = &mut ctx.asset_store;
