@@ -8,6 +8,7 @@ use macroquad::ui::{root_ui, widgets};
 use crate::asset::AssetStore;
 use crate::command::CommandManager;
 use crate::editor::{EditorState, ToolMode};
+use crate::save::{SaveFileOwned, SaveFileRef, create_save_file, load_save_file};
 use crate::sprite::Sprite;
 use crate::{AppContext, PIXELS_PER_UNIT, World, spawn_pawn};
 
@@ -135,13 +136,7 @@ impl Editor {
         });
 
         if save_world {
-            match ron::ser::to_string_pretty(&world, ron::ser::PrettyConfig::default()) {
-                Ok(data) => match std::fs::write("assets/world.ron", data) {
-                    Ok(()) => println!("Saved world to assets/world.ron"),
-                    Err(e) => eprintln!("Failed to write world: {e}"),
-                },
-                Err(e) => eprintln!("Failed to serialize world: {e}"),
-            }
+            create_save_file(&world, &ctx.asset_store);
         }
 
         if let Some(ref map) = world.map {
@@ -151,10 +146,10 @@ impl Editor {
         self.editor_state
             .update(world, command_manager, &ctx.asset_store);
         if self.editor_state.tool_mode == ToolMode::Spawn {
-            // let cavalry = ctx.asset_store.get_handle_from("cavalry");
-            // let cavalry = Sprite::new(cavalry, &ctx.asset_store);
+            let cavalry = ctx.asset_store.get_handle_from("cavalry");
+            let cavalry = Sprite::new(cavalry, &ctx.asset_store);
 
-            // spawn_pawn(world, &cavalry);
+            spawn_pawn(world, &cavalry);
         }
 
         // draw_circle(0.0, 0.0, 50.0, WHITE);
@@ -200,9 +195,9 @@ impl Editor {
 
     fn load_world(&self, ctx: &mut AppContext) {
         let file = File::open("assets/world.ron").expect("Failed opening world.ron");
-        match ron::de::from_reader(file) {
-            Ok(w) => {
-                ctx.world = w;
+        match ron::de::from_reader::<_, SaveFileOwned>(file) {
+            Ok(f) => {
+                load_save_file(ctx, f);
             }
             Err(e) => println!("Failed to deserialize world"),
         }

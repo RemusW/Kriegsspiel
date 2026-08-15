@@ -2,12 +2,13 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+mod asset;
 mod camera;
 mod command;
 mod editor;
-mod sprite;
-mod asset;
 mod menu;
+mod sprite;
+mod save;
 
 use crate::asset::AssetStore;
 use crate::camera::Camera;
@@ -49,7 +50,7 @@ async fn main() {
 }
 
 #[derive(Default)]
-struct AppContext{
+struct AppContext {
     command_manger: CommandManager,
     asset_store: AssetStore,
     world: World,
@@ -60,6 +61,15 @@ struct World {
     pawn_manager: PawnManager,
     camera: Camera,
     map: Option<Sprite>,
+}
+
+impl World {
+    fn load_assets(&self, ctx: AppContext) {
+        // for pawn in self.pawn_manager.pawn_map.values() {
+        //     pawn.
+        // }
+        // ctx.asset_store.load_texture(name, path)
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
