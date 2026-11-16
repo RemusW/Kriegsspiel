@@ -1,0 +1,71 @@
+.toolbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+
+.button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    color 120ms;
+}
+
+.button:hover {
+  color: var(--text-strong);
+  background: var(--control-hover-bg);
+}
+
+.button[aria-pressed="true"] {
+  color: var(--text-strong);
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--control-radius);
+}
+
+.small {
+  width: 30px;
+  height: 30px;
+}
+
+.small svg {
+  width: 16px;
+  height: 16px;
+}
+
+.options .button[aria-pressed="true"] {
+  color: var(--accent-text);
+  background: var(--control-hover-bg);
+  border-color: transparent;
+}

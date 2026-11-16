@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { EMPTY_BOARD, type Board } from "./model";
 import { DEFAULT_PORT, type ServerMessage } from "./protocol";
-
-export type Connection = "connecting" | "connected" | "disconnected";
+import type { Connection } from "./state/store";
 
 const RETRY_MS = 1500;
 

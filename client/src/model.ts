@@ -3,7 +3,7 @@
 export type UnitKind = "Infantry" | "Cavalry" | "Artillery";
 export type Side = "Blue" | "Red";
 
-export interface BoardObject {
+export interface Pawn {
   /** Position on the map plane: world X, world Z. */
   pos: [number, number];
   /** Rotation around the vertical axis, in radians. */
@@ -13,7 +13,7 @@ export interface BoardObject {
   image: string | null;
 }
 
-export interface Unit extends BoardObject {
+export interface Unit extends Pawn {
   /** Stable across snapshots. */
   id: number;
   kind: UnitKind;
@@ -23,7 +23,7 @@ export interface Unit extends BoardObject {
 export interface Board {
   /** Asset id of the map image. */
   mapImage: string | null;
-  units: Unit[];
+  units: Pawn[];
   nextId: number;
 }
 

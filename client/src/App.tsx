@@ -1,24 +1,37 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
-import { KriegsspielEngine } from "./engine/KriegsspielEngine";
-import { useGame } from "./useGame";
+import { KSEngine } from "./engine/KriegsspielEngine";
+import { GameScreen } from "./interface/GameScreen";
+import { Menu } from "./interface/Menu";
+
+type Screen = "menu" | "game";
 
 export default function App() {
-  const { board, connection } = useGame();
+  const [screen, setScreen] = useState<Screen>("menu");
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    const engine = new KriegsspielEngine(canvasRef.current!);
+    const engine = new KSEngine(canvasRef.current!);
     engine.init().catch(console.error);
-    return () => { engine.dispose() };
+    return () => {
+      engine.dispose();
+    };
   }, []);
 
+  // The canvas stays mounted on every screen, so the engine is created once and
+  // initialises behind the menu. Unmounting it would run the effect's cleanup and dispose the engine.
   return (
     <div className="app">
-      <canvas ref={canvasRef} className="editor"/>
-      <div className="status">
-        Server: {connection} | Units: {board.units.length}
-      </div>
+      <canvas ref={canvasRef} className="editor" />
+      {screen === "menu" ? (
+        <Menu
+          onHost={() => setScreen("game")}
+          onJoin={() => setScreen("game")}
+          onSettings={() => {}}
+        />
+      ) : (
+        <GameScreen />
+      )}
     </div>
   );
 }

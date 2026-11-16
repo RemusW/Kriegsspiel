@@ -1,0 +1,9 @@
+.status {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 8px;
+  font: 13px var(--font-mono);
+  color: var(--text-strong);
+  background: rgba(13, 15, 20, 0.82);
+}

@@ -1,0 +1,23 @@
+:root {
+  --app-bg: #1f2126;
+
+  --panel-bg: rgba(31, 33, 38, 0.92);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --panel-radius: 8px;
+
+  --control-bg: #2b2e35;
+  --control-hover-bg: #363a43;
+  --control-border: rgba(255, 255, 255, 0.1);
+  --control-radius: 6px;
+
+  --text: #e8e6e1;
+  --text-muted: #c9c7c2;
+  --text-strong: #fff;
+
+  --accent: #6b9bd1;
+  --accent-bg: #3b5f8a;
+  --accent-text: #8fb8e6;
+
+  --font-ui: system-ui, sans-serif;
+  --font-mono: ui-monospace, Menlo, Consolas, monospace;
+}
