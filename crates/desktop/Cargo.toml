@@ -1,0 +1,18 @@
+[package]
+name = "kriegsspiel"
+version = "0.1.0"
+description = "Kriegsspiel umpire application"
+edition = "2024"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name, which matters on Windows.
+# See https://github.com/rust-lang/cargo/issues/8519
+name = "kriegsspiel_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+kriegsspiel-server = { path = "../server" }

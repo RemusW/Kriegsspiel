@@ -1,0 +1,17 @@
+{
+  "name": "kriegsspiel",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["client"],
+  "scripts": {
+    "dev": "npm run dev -w client",
+    "build": "npm run build -w client",
+    "typecheck": "npm run typecheck -w client",
+    "preview": "npm run preview -w client",
+    "server": "cargo run -p kriegsspiel-server",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
