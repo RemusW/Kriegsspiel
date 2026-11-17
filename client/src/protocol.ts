@@ -1,8 +1,7 @@
-// Messages exchanged with the server, as JSON. Mirrors `crates/server/src/protocol.rs`;
-// change both together.
+// Messages exchanged with the server, as JSON. The types are generated from
+// `crates/server/src/protocol.rs` into `bindings/` by `cargo test -p kriegsspiel-server`.
 
-import type { Board } from "./model";
+export type { ServerMessage } from "./bindings/ServerMessage";
 
-export type ServerMessage = { type: "snapshot"; board: Board };
-
+/** Matches `DEFAULT_PORT` in `crates/server/src/lib.rs`. */
 export const DEFAULT_PORT = 7878;

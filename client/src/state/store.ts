@@ -38,7 +38,7 @@ export const clientStore = createStore<ClientState>()((set) => ({
   setSelection: (selection) => set({ selection }),
   setBoard: (board) =>
     set((state) => {
-      const ids = new Set(board.units.map((unit) => unit.id));
+      const ids = new Set(board.pawns.map((unit) => unit.id));
       const kept = state.selection.filter((id) => ids.has(id));
       // Keep the old array when nothing was dropped, so selection subscribers are not notified.
       const selection =

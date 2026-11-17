@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { EMPTY_BOARD, type Board } from "./model";
+import { useEffect } from "react";
 import { DEFAULT_PORT, type ServerMessage } from "./protocol";
-import type { Connection } from "./state/store";
+import { clientStore } from "./state/store";
+import { EMPTY_BOARD } from "./model";
 
 const RETRY_MS = 1500;
 
@@ -11,16 +11,17 @@ function serverUrl(): string {
 }
 
 /** Connect to the game server and keep the latest board it sent. Reconnects on its own. */
-export function useGame(): { board: Board; connection: Connection } {
-  const [board, setBoard] = useState<Board>(EMPTY_BOARD);
-  const [connection, setConnection] = useState<Connection>("connecting");
-
+export function useGameConnection() {
   useEffect(() => {
+    const { setBoard, setConnection } = clientStore.getState();
+
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let closed = false;
 
     const connect = () => {
+      setConnection("connecting");
+
       socket = new WebSocket(serverUrl());
       socket.onopen = () => setConnection("connected");
       socket.onmessage = (event) => {
@@ -41,8 +42,7 @@ export function useGame(): { board: Board; connection: Connection } {
       closed = true;
       clearTimeout(retry);
       socket?.close();
+      setBoard(EMPTY_BOARD);
     };
   }, []);
-
-  return { board, connection };
 }

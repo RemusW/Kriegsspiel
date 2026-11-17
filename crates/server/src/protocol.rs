@@ -1,12 +1,14 @@
-//! Messages exchanged with clients, as JSON. Mirrored by `client/src/protocol.ts`;
-//! change both together.
+//! Messages exchanged with clients, as JSON. Their TypeScript definitions are written to
+//! `client/src/bindings/` when the tests run.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::model::Board;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export)]
 pub enum ServerMessage {
     /// The live board.
     Snapshot { board: Board },

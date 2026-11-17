@@ -1,7 +1,7 @@
 //! The board document: units, recorded turns, and each umpire's undo history.
 //!
-//! `Board`, `Unit`, `UnitKind` and `Side` are mirrored by `client/src/model.ts`; change both
-//! together.
+//! `Board`, `Unit`, `Pawn`, `UnitKind` and `Side` derive `TS`: running the tests writes their
+//! TypeScript definitions to `client/src/bindings/`.
 //!
 //! An undo step records every unit it touched before and after. Undoing writes the old
 //! values back only where the board still holds the values that step left, so later changes
@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Undo steps kept per umpire.
 const UNDO_LIMIT: usize = 200;
@@ -17,26 +18,26 @@ const UNDO_LIMIT: usize = 200;
 /// Keys an umpire's undo history and turn view.
 pub type UmpireId = u64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum UnitKind {
     Infantry,
     Cavalry,
     Artillery,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum Side {
     Blue,
     Red,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Where a piece sits on the table and how its block is drawn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct Unit {
-    /// Stable across snapshots, and never reused within a game.
-    pub id: u64,
-    pub kind: UnitKind,
-    pub side: Side,
+#[ts(export)]
+pub struct Pawn {
     /// Position on the map plane (world X, world Z).
     pub pos: [f32; 2],
     /// Rotation around the vertical axis, in radians.
@@ -46,13 +47,27 @@ pub struct Unit {
     pub image: Option<String>,
 }
 
-/// Everything that makes up one state of the table.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// A unit on the board. Its pawn fields sit at the top level of its JSON.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Unit {
+    /// Stable across snapshots, and never reused within a game.
+    pub id: u64,
+    pub kind: UnitKind,
+    pub side: Side,
+    #[serde(flatten)]
+    pub pawn: Pawn,
+}
+
+/// Everything that makes up one state of the table.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct Board {
     /// Asset id of the map image.
     pub map_image: Option<String>,
-    pub units: Vec<Unit>,
+    pub pawns: Vec<Unit>,
     pub next_id: u64,
 }
 
@@ -60,14 +75,16 @@ impl Board {
     pub fn spawn(&mut self, kind: UnitKind, side: Side, pos: [f32; 2]) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.units.push(Unit {
+        self.pawns.push(Unit {
             id,
             kind,
             side,
-            pos,
-            rot: 0.0,
-            scale: 1.0,
-            image: None,
+            pawn: Pawn {
+                pos,
+                rot: 0.0,
+                scale: 1.0,
+                image: None,
+            },
         });
         id
     }
@@ -228,12 +245,12 @@ impl Edit {
     /// What changed from one board to another. The id counter is not tracked: undo never
     /// winds it back.
     fn between(before: &Board, after: &Board) -> Self {
-        let old: HashMap<u64, &Unit> = before.units.iter().map(|u| (u.id, u)).collect();
-        let new: HashMap<u64, &Unit> = after.units.iter().map(|u| (u.id, u)).collect();
+        let old: HashMap<u64, &Unit> = before.pawns.iter().map(|u| (u.id, u)).collect();
+        let new: HashMap<u64, &Unit> = after.pawns.iter().map(|u| (u.id, u)).collect();
 
         // Walk the boards' own unit lists, not the maps, so the order is deterministic.
         let mut units = Vec::new();
-        for unit in &before.units {
+        for unit in &before.pawns {
             let now = new.get(&unit.id).copied();
             if now != Some(unit) {
                 units.push(UnitChange {
@@ -243,7 +260,7 @@ impl Edit {
                 });
             }
         }
-        for unit in &after.units {
+        for unit in &after.pawns {
             if !old.contains_key(&unit.id) {
                 units.push(UnitChange {
                     id: unit.id,
@@ -274,17 +291,17 @@ impl Edit {
             } else {
                 (&change.before, &change.after)
             };
-            let index = board.units.iter().position(|u| u.id == change.id);
+            let index = board.pawns.iter().position(|u| u.id == change.id);
             match (index, from, to) {
                 // Remove a unit the edit created, unless someone has changed it since.
-                (Some(i), Some(from), None) if board.units[i] == *from => {
-                    board.units.remove(i);
+                (Some(i), Some(from), None) if board.pawns[i] == *from => {
+                    board.pawns.remove(i);
                 }
                 // Bring back a unit the edit removed.
-                (None, None, Some(to)) => board.units.push(to.clone()),
+                (None, None, Some(to)) => board.pawns.push(to.clone()),
                 // Change back each field nobody else has touched since.
                 (Some(i), Some(from), Some(to)) => {
-                    skipped |= merge_fields(&mut board.units[i], from, to);
+                    skipped |= merge_fields(&mut board.pawns[i], from, to);
                 }
                 // Someone else has since changed, removed or brought back this unit.
                 _ => skipped = true,
@@ -308,18 +325,21 @@ fn merge_fields(unit: &mut Unit, from: &Unit, to: &Unit) -> bool {
         id: _,
         kind,
         side,
-        pos,
-        rot,
-        scale,
-        image,
+        pawn:
+            Pawn {
+                pos,
+                rot,
+                scale,
+                image,
+            },
     } = to;
     let skipped = [
         merge(&mut unit.kind, &from.kind, kind),
         merge(&mut unit.side, &from.side, side),
-        merge(&mut unit.pos, &from.pos, pos),
-        merge(&mut unit.rot, &from.rot, rot),
-        merge(&mut unit.scale, &from.scale, scale),
-        merge(&mut unit.image, &from.image, image),
+        merge(&mut unit.pawn.pos, &from.pawn.pos, pos),
+        merge(&mut unit.pawn.rot, &from.pawn.rot, rot),
+        merge(&mut unit.pawn.scale, &from.pawn.scale, scale),
+        merge(&mut unit.pawn.image, &from.pawn.image, image),
     ];
     skipped.contains(&true)
 }
@@ -358,11 +378,11 @@ mod tests {
     }
 
     fn unit(board: &mut Board, id: u64) -> &mut Unit {
-        board.units.iter_mut().find(|u| u.id == id).unwrap()
+        board.pawns.iter_mut().find(|u| u.id == id).unwrap()
     }
 
     fn pos(doc: &Doc, id: u64) -> [f32; 2] {
-        doc.board.units.iter().find(|u| u.id == id).unwrap().pos
+        doc.board.pawns.iter().find(|u| u.id == id).unwrap().pawn.pos
     }
 
     #[test]
@@ -372,17 +392,17 @@ mod tests {
             b.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
         });
         assert_eq!(doc.undo(A), Step::Applied);
-        assert!(doc.board.units.is_empty());
+        assert!(doc.board.pawns.is_empty());
         assert_eq!(doc.redo(A), Step::Applied);
-        assert_eq!(doc.board.units.len(), 1);
+        assert_eq!(doc.board.pawns.len(), 1);
         assert_eq!(doc.redo(A), Step::Empty);
     }
 
     #[test]
     fn undo_reverts_only_your_own_edit() {
         let mut doc = two_units();
-        doc.edit(B, |b| unit(b, 0).pos = [1.0, 1.0]);
-        doc.edit(A, |b| unit(b, 1).pos = [2.0, 2.0]);
+        doc.edit(B, |b| unit(b, 0).pawn.pos = [1.0, 1.0]);
+        doc.edit(A, |b| unit(b, 1).pawn.pos = [2.0, 2.0]);
 
         assert_eq!(doc.undo(B), Step::Applied);
         assert_eq!(pos(&doc, 0), [0.0, 0.0]);
@@ -394,15 +414,15 @@ mod tests {
         let mut doc = two_units();
         doc.edit(B, |b| {
             let u = unit(b, 0);
-            u.pos = [1.0, 1.0];
-            u.rot = 0.5;
+            u.pawn.pos = [1.0, 1.0];
+            u.pawn.rot = 0.5;
         });
-        doc.edit(A, |b| unit(b, 0).pos = [2.0, 2.0]);
+        doc.edit(A, |b| unit(b, 0).pawn.pos = [2.0, 2.0]);
 
         assert_eq!(doc.undo(B), Step::Partial);
         let u = unit(&mut doc.board, 0);
-        assert_eq!(u.pos, [2.0, 2.0], "A's later move stays");
-        assert_eq!(u.rot, 0.0, "B's rotation is undone");
+        assert_eq!(u.pawn.pos, [2.0, 2.0], "A's later move stays");
+        assert_eq!(u.pawn.rot, 0.0, "B's rotation is undone");
     }
 
     #[test]
@@ -410,16 +430,16 @@ mod tests {
         let mut doc = two_units();
         doc.edit(B, |b| {
             let u = unit(b, 0);
-            u.pos = [1.0, 1.0];
-            u.rot = 0.5;
+            u.pawn.pos = [1.0, 1.0];
+            u.pawn.rot = 0.5;
         });
-        doc.edit(A, |b| unit(b, 0).pos = [2.0, 2.0]);
+        doc.edit(A, |b| unit(b, 0).pawn.pos = [2.0, 2.0]);
         doc.undo(B);
 
         assert_eq!(doc.redo(B), Step::Applied);
         let u = unit(&mut doc.board, 0);
-        assert_eq!(u.pos, [2.0, 2.0]);
-        assert_eq!(u.rot, 0.5);
+        assert_eq!(u.pawn.pos, [2.0, 2.0]);
+        assert_eq!(u.pawn.rot, 0.5);
     }
 
     #[test]
@@ -428,7 +448,7 @@ mod tests {
         doc.edit(B, |b| {
             b.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
         });
-        doc.edit(A, |b| unit(b, 0).pos = [5.0, 5.0]);
+        doc.edit(A, |b| unit(b, 0).pawn.pos = [5.0, 5.0]);
 
         assert_eq!(doc.undo(B), Step::Partial);
         assert_eq!(pos(&doc, 0), [5.0, 5.0]);
@@ -437,7 +457,7 @@ mod tests {
     #[test]
     fn undoing_a_delete_brings_the_unit_back() {
         let mut doc = two_units();
-        doc.edit(A, |b| b.units.retain(|u| u.id != 0));
+        doc.edit(A, |b| b.pawns.retain(|u| u.id != 0));
         assert_eq!(doc.undo(A), Step::Applied);
         assert_eq!(pos(&doc, 0), [0.0, 0.0]);
     }
@@ -445,13 +465,13 @@ mod tests {
     #[test]
     fn an_edit_clears_only_its_own_umpires_redo() {
         let mut doc = two_units();
-        doc.edit(A, |b| unit(b, 0).pos = [1.0, 1.0]);
+        doc.edit(A, |b| unit(b, 0).pawn.pos = [1.0, 1.0]);
         doc.undo(A);
-        doc.edit(B, |b| unit(b, 1).pos = [2.0, 2.0]);
+        doc.edit(B, |b| unit(b, 1).pawn.pos = [2.0, 2.0]);
         assert_eq!(doc.redo(A), Step::Applied);
 
         doc.undo(A);
-        doc.edit(A, |b| unit(b, 1).rot = 1.0);
+        doc.edit(A, |b| unit(b, 1).pawn.rot = 1.0);
         assert_eq!(doc.redo(A), Step::Empty);
     }
 
@@ -466,14 +486,14 @@ mod tests {
         doc.edit(A, |b| {
             b.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
         });
-        assert_eq!(doc.board.units[0].id, 1, "undo does not wind back the counter");
+        assert_eq!(doc.board.pawns[0].id, 1, "undo does not wind back the counter");
 
         doc.step_turn(A, false);
         assert!(doc.restore_viewed_turn(A));
         doc.edit(A, |b| {
             b.spawn(UnitKind::Cavalry, Side::Red, [1.0, 1.0]);
         });
-        assert_eq!(doc.board.units[0].id, 2, "restoring a turn does not either");
+        assert_eq!(doc.board.pawns[0].id, 2, "restoring a turn does not either");
     }
 
     #[test]
@@ -487,18 +507,18 @@ mod tests {
         doc.step_turn(A, false);
         assert_eq!(doc.viewing(A), Some(1));
         assert_eq!(doc.viewing(B), None);
-        assert_eq!(doc.shown(B).units.len(), 2);
-        assert!(!doc.edit(A, |b| b.units.clear()));
+        assert_eq!(doc.shown(B).pawns.len(), 2);
+        assert!(!doc.edit(A, |b| b.pawns.clear()));
         assert_eq!(doc.undo(A), Step::ReadOnly);
-        assert!(doc.edit(B, |b| unit(b, 0).rot = 1.0));
+        assert!(doc.edit(B, |b| unit(b, 0).pawn.rot = 1.0));
 
         doc.step_turn(A, false);
         assert_eq!(doc.viewing(A), Some(0));
-        assert!(doc.shown(A).units.is_empty());
+        assert!(doc.shown(A).pawns.is_empty());
         doc.step_turn(A, true);
         doc.step_turn(A, true);
         assert_eq!(doc.viewing(A), None);
-        assert_eq!(doc.shown(A).units.len(), 2);
+        assert_eq!(doc.shown(A).pawns.len(), 2);
     }
 
     #[test]
@@ -511,16 +531,16 @@ mod tests {
         doc.step_turn(A, false);
         assert!(doc.restore_viewed_turn(A));
         assert_eq!(doc.viewing(A), None);
-        assert_eq!(doc.board.units.len(), 1);
+        assert_eq!(doc.board.pawns.len(), 1);
         assert_eq!(doc.undo(A), Step::Applied);
-        assert_eq!(doc.board.units.len(), 2);
+        assert_eq!(doc.board.pawns.len(), 2);
     }
 
     #[test]
     fn undo_history_is_capped() {
         let mut doc = two_units();
         for i in 0..=UNDO_LIMIT {
-            doc.edit(A, |b| unit(b, 0).rot = i as f32 + 1.0);
+            doc.edit(A, |b| unit(b, 0).pawn.rot = i as f32 + 1.0);
         }
         for _ in 0..UNDO_LIMIT {
             assert_eq!(doc.undo(A), Step::Applied);
@@ -539,8 +559,8 @@ mod tests {
         let json = serde_json::to_value(&board).unwrap();
         assert_eq!(json["mapImage"], "map-1");
         assert_eq!(json["nextId"], 1);
-        assert_eq!(json["units"][0]["kind"], "Infantry");
-        assert_eq!(json["units"][0]["pos"][1], -4.5);
+        assert_eq!(json["pawns"][0]["kind"], "Infantry");
+        assert_eq!(json["pawns"][0]["pos"][1], -4.5);
 
         let back: Board = serde_json::from_value(json).unwrap();
         assert_eq!(back, board);

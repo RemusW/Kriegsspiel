@@ -1,0 +1,5 @@
+[env]
+# ts-rs writes the TypeScript bindings here when `cargo test -p kriegsspiel-server` runs.
+TS_RS_EXPORT_DIR = { value = "client/src/bindings", relative = true }
+# serde_json sends u64 as a JSON number, so export it as `number`, not `bigint`.
+TS_RS_LARGE_INT = "number"

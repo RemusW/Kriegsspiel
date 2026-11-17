@@ -1,15 +1,18 @@
-import { useGame } from "../useGame";
+import { useClientStore } from "../state/store";
+import { useGameConnection } from "../useGameConnection";
 import styles from "./GameScreen.module.css";
 import { Toolbar } from "./Toolbar";
 
 export function GameScreen() {
-  const { board, connection } = useGame();
+  useGameConnection();
+  const connection = useClientStore((s) => s.connection);
+  const pawns = useClientStore((s) => s.board.pawns);
 
   return (
     <>
       <Toolbar />
       <div className={styles.status}>
-        Server: {connection} | Units: {board.units.length}
+        Server: {connection} | Units: {pawns.length}
       </div>
     </>
   );

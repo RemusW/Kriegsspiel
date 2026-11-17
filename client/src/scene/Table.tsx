@@ -34,7 +34,7 @@ export function Table({ board }: { board: Board }) {
         <planeGeometry args={[MAP_WIDTH, DEFAULT_MAP_DEPTH]} />
         <meshBasicMaterial color="#ccc29e" />
       </mesh>
-      {board.units.map((unit) => (
+      {board.pawns.map((unit) => (
         <UnitBlock key={unit.id} unit={unit} />
       ))}
     </Canvas>
