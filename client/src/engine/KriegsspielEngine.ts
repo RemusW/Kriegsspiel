@@ -5,6 +5,7 @@ import {
   Plane,
   PlaneGeometry,
   Raycaster,
+  type Ray,
   Scene,
   SRGBColorSpace,
   TextureLoader,
@@ -16,6 +17,8 @@ import farleyUrl from "../../assets/farley.png";
 import type { ServerConnection } from "../net/ServerConnection";
 import type { ClientStore } from "../state/store";
 import { CameraRig } from "./camera/CameraRig";
+import { OVERLAY_LAYER } from "./layers";
+import { hitTestUnits } from "./pawns/hitTest";
 import { PawnLayer } from "./pawns/PawnLayer";
 import { ToolInput } from "./tools/ToolInput";
 
@@ -29,6 +32,7 @@ const MAX_FRAME_SECONDS = 0.1;
 const GROUND = new Plane(new Vector3(0, 1, 0), 0);
 
 export class KSEngine {
+  private store: ClientStore;
   private renderer: WebGPURenderer;
   private rig: CameraRig;
   private scene: Scene;
@@ -49,19 +53,29 @@ export class KSEngine {
     store: ClientStore,
     connection: ServerConnection,
   ) {
-    this.renderer = new WebGPURenderer({ canvas: canvas, antialias: true });
+    this.store = store;
+    this.renderer = new WebGPURenderer({
+      canvas: canvas,
+      antialias: true,
+      // Selection outlines are masked with the stencil buffer.
+      stencil: true,
+    });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setAnimationLoop((time) => this.render(time));
     this.rig = new CameraRig(canvas, store.getState().cameraMode);
+    this.rig.camera.layers.enable(OVERLAY_LAYER);
     this.rig.frameMap(MAP_WIDTH, BLANK_MAP_DEPTH);
 
     this.scene = new Scene();
     this.pawns = new PawnLayer();
     this.pawns.sync(store.getState().board.pawns);
+    this.pawns.showSelection(store.getState().selection);
     this.scene.add(this.pawns.group);
 
     this.tools = new ToolInput(canvas, store, {
       pickTable: (event) => this.pickTable(event),
+      pickUnit: (event) => this.pickUnit(event),
+      select: (ids) => store.getState().setSelection(ids),
       send: (message) => connection.send(message),
     });
 
@@ -71,6 +85,12 @@ export class KSEngine {
       }
       if (state.board !== previous.board) {
         this.pawns.sync(state.board.pawns);
+      }
+      if (
+        state.board !== previous.board ||
+        state.selection !== previous.selection
+      ) {
+        this.pawns.showSelection(state.selection);
       }
     });
 
@@ -122,18 +142,31 @@ export class KSEngine {
    * when the pointer is above the horizon or the point is beyond the camera's far plane.
    */
   private pickTable(event: PointerEvent): [number, number] | null {
+    const ray = this.rayThrough(event);
+    // The table is flat at y = 0, so the ray's hit on that plane is the exact point.
+    const hit = ray.intersectPlane(GROUND, this.hit);
+    // A piece beyond the far plane would be clipped, so it could not be seen once placed.
+    if (!hit || hit.distanceTo(ray.origin) > this.rig.camera.far) return null;
+    return [hit.x, hit.z];
+  }
+
+  /** The unit whose top face is under the pointer, or null. */
+  private pickUnit(event: PointerEvent): number | null {
+    return hitTestUnits(
+      this.rayThrough(event),
+      this.store.getState().board.pawns,
+    );
+  }
+
+  /** The camera ray through the pointer's position on the canvas. */
+  private rayThrough(event: PointerEvent): Ray {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.set(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
       1 - ((event.clientY - rect.top) / rect.height) * 2,
     );
     this.raycaster.setFromCamera(this.pointer, this.rig.camera);
-    // The table is flat at y = 0, so the ray's hit on that plane is the exact point.
-    const ray = this.raycaster.ray;
-    const hit = ray.intersectPlane(GROUND, this.hit);
-    // A piece beyond the far plane would be clipped, so it could not be seen once placed.
-    if (!hit || hit.distanceTo(ray.origin) > this.rig.camera.far) return null;
-    return [hit.x, hit.z];
+    return this.raycaster.ray;
   }
 
   /** The Farley map on a subdivided plane, lit by one directional light and seen from above at an angle. */

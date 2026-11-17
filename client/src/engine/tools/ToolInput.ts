@@ -1,5 +1,6 @@
 import type { ClientMessage } from "../../protocol";
 import type { ClientStore, Tool } from "../../state/store";
+import { SelectTool } from "./SelectTool";
 import { SpawnTool } from "./SpawnTool";
 
 /** How far the pointer may move between press and release, in CSS pixels, for a click. */
@@ -9,6 +10,10 @@ const CLICK_SLOP = 4;
 export interface ToolContext {
   /** The point on the table under the pointer as [world X, world Z], on or off the map. */
   pickTable(event: PointerEvent): [number, number] | null;
+  /** The unit whose top face is under the pointer, or null. */
+  pickUnit(event: PointerEvent): number | null;
+  /** Replace the selection with these unit ids. */
+  select(ids: number[]): void;
   /** Send a command to the server. The board it sends back shows the result. */
   send(message: ClientMessage): void;
 }
@@ -32,7 +37,10 @@ export class ToolInput {
     private store: ClientStore,
     context: ToolContext,
   ) {
-    this.tools = { spawn: new SpawnTool(context) };
+    this.tools = {
+      select: new SelectTool(context),
+      spawn: new SpawnTool(context),
+    };
     element.addEventListener("pointerdown", this.onPointerDown);
     element.addEventListener("pointerup", this.onPointerUp);
   }

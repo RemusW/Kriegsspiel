@@ -18,7 +18,7 @@ export function Toolbar() {
       aria-orientation="vertical"
     >
       <ToolButton
-        label="Select"
+        label="Select: click a unit"
         active={tool === "select"}
         onClick={() => setTool("select")}
       >
