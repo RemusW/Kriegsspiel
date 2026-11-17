@@ -7,6 +7,8 @@ export function Toolbar() {
   const marqueeShape = useClientStore((s) => s.marqueeShape);
   const setTool = useClientStore((s) => s.setTool);
   const setMarqueeShape = useClientStore((s) => s.setMarqueeShape);
+  const cameraMode = useClientStore((s) => s.cameraMode);
+  const setCameraMode = useClientStore((s) => s.setCameraMode);
 
   return (
     <div
@@ -49,6 +51,23 @@ export function Toolbar() {
           </ToolButton>
         </div>
       )}
+      <div className={styles.divider} role="separator" />
+      <div className={styles.group} role="group" aria-label="Camera">
+        <ToolButton
+          label="Fly camera: W/A/S/D to move, R/F up and down, right-drag to look"
+          active={cameraMode === "fly"}
+          onClick={() => setCameraMode("fly")}
+        >
+          <FlyIcon />
+        </ToolButton>
+        <ToolButton
+          label="Map camera: right-drag or W/A/S/D to pan, middle-drag to tilt, scroll to zoom"
+          active={cameraMode === "map"}
+          onClick={() => setCameraMode("map")}
+        >
+          <MapIcon />
+        </ToolButton>
+      </div>
     </div>
   );
 }
@@ -112,6 +131,24 @@ function BoxIcon() {
   return (
     <Icon>
       <rect x="4" y="4" width="16" height="16" strokeDasharray="3 5" />
+    </Icon>
+  );
+}
+
+function FlyIcon() {
+  return (
+    <Icon>
+      <path d="M21 3 3 10.5l7 2.5 2.5 7z" />
+      <path d="m10 13 4-4" />
+    </Icon>
+  );
+}
+
+function MapIcon() {
+  return (
+    <Icon>
+      <path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z" />
+      <path d="M9 4v13.5M15 6.5V20" />
     </Icon>
   );
 }

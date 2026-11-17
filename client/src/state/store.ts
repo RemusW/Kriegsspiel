@@ -5,6 +5,7 @@ import { EMPTY_BOARD, type Board } from "../model";
 export type Tool = "select" | "marquee";
 export type MarqueeShape = "box" | "lasso";
 export type Connection = "connecting" | "connected" | "disconnected";
+export type CameraMode = "fly" | "map";
 
 /**
  * Client state shared by the React UI and the engine. Components read it with
@@ -13,6 +14,7 @@ export type Connection = "connecting" | "connected" | "disconnected";
 export interface ClientState {
   tool: Tool;
   marqueeShape: MarqueeShape;
+  cameraMode: CameraMode;
   /** Ids of the selected units. Only ids present in `board`. */
   selection: number[];
   /** The latest board the server sent. */
@@ -21,6 +23,7 @@ export interface ClientState {
 
   setTool: (tool: Tool) => void;
   setMarqueeShape: (shape: MarqueeShape) => void;
+  setCameraMode: (mode: CameraMode) => void;
   setSelection: (ids: number[]) => void;
   setBoard: (board: Board) => void;
   setConnection: (connection: Connection) => void;
@@ -29,12 +32,14 @@ export interface ClientState {
 export const clientStore = createStore<ClientState>()((set) => ({
   tool: "select",
   marqueeShape: "box",
+  cameraMode: "fly",
   selection: [],
   board: EMPTY_BOARD,
   connection: "connecting",
 
   setTool: (tool) => set({ tool }),
   setMarqueeShape: (marqueeShape) => set({ marqueeShape }),
+  setCameraMode: (cameraMode) => set({ cameraMode }),
   setSelection: (selection) => set({ selection }),
   setBoard: (board) =>
     set((state) => {
