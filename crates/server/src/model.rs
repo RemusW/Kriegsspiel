@@ -19,7 +19,7 @@ const UNDO_LIMIT: usize = 200;
 pub type UmpireId = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "model.ts")]
 pub enum UnitKind {
     Infantry,
     Cavalry,
@@ -27,7 +27,7 @@ pub enum UnitKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "model.ts")]
 pub enum Side {
     Blue,
     Red,
@@ -36,7 +36,7 @@ pub enum Side {
 /// Where a piece sits on the table and how its block is drawn.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, export_to = "model.ts")]
 pub struct Pawn {
     /// Position on the map plane (world X, world Z).
     pub pos: [f32; 2],
@@ -50,7 +50,7 @@ pub struct Pawn {
 /// A unit on the board. Its pawn fields sit at the top level of its JSON.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, export_to = "model.ts")]
 pub struct Unit {
     /// Stable across snapshots, and never reused within a game.
     pub id: u64,
@@ -63,7 +63,7 @@ pub struct Unit {
 /// Everything that makes up one state of the table.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, export_to = "model.ts")]
 pub struct Board {
     /// Asset id of the map image.
     pub map_image: Option<String>,

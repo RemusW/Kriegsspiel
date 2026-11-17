@@ -8,7 +8,7 @@ use crate::model::Board;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
-#[ts(export)]
+#[ts(export, export_to = "protocol.ts")]
 pub enum ServerMessage {
     /// The live board.
     Snapshot { board: Board },
