@@ -2,16 +2,22 @@ import {
   DirectionalLight,
   Mesh,
   MeshStandardMaterial,
+  Plane,
   PlaneGeometry,
+  Raycaster,
   Scene,
   SRGBColorSpace,
   TextureLoader,
+  Vector2,
+  Vector3,
   WebGPURenderer,
 } from "three/webgpu";
 import farleyUrl from "../../assets/farley.png";
-import { Unit } from "../model";
+import type { ServerConnection } from "../net/ServerConnection";
 import type { ClientStore } from "../state/store";
 import { CameraRig } from "./camera/CameraRig";
+import { PawnLayer } from "./pawns/PawnLayer";
+import { ToolInput } from "./tools/ToolInput";
 
 /** Width of the map plane in world units. Its depth follows the image's aspect ratio. */
 const MAP_WIDTH = 100;
@@ -20,29 +26,53 @@ const BLANK_MAP_DEPTH = 70;
 /** Longest frame time the camera moves by, so a stalled or hidden tab does not cause a jump. */
 const MAX_FRAME_SECONDS = 0.1;
 
+const GROUND = new Plane(new Vector3(0, 1, 0), 0);
+
 export class KSEngine {
   private renderer: WebGPURenderer;
   private rig: CameraRig;
   private scene: Scene;
+  private pawns: PawnLayer;
+  private tools: ToolInput;
+
+  private raycaster = new Raycaster();
+  private pointer = new Vector2();
+  private hit = new Vector3();
 
   private resizeObserver: ResizeObserver;
   private unsubscribe: () => void;
   private disposed = false;
   private lastFrameTime: number | null = null;
 
-  constructor(canvas: HTMLCanvasElement, store: ClientStore) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    store: ClientStore,
+    connection: ServerConnection,
+  ) {
     this.renderer = new WebGPURenderer({ canvas: canvas, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setAnimationLoop((time) => this.render(time));
     this.rig = new CameraRig(canvas, store.getState().cameraMode);
     this.rig.frameMap(MAP_WIDTH, BLANK_MAP_DEPTH);
+
+    this.scene = new Scene();
+    this.pawns = new PawnLayer();
+    this.pawns.sync(store.getState().board.pawns);
+    this.scene.add(this.pawns.group);
+
+    this.tools = new ToolInput(canvas, store, {
+      pickTable: (event) => this.pickTable(event),
+      send: (message) => connection.send(message),
+    });
+
     this.unsubscribe = store.subscribe((state, previous) => {
       if (state.cameraMode !== previous.cameraMode) {
         this.rig.setMode(state.cameraMode);
       }
+      if (state.board !== previous.board) {
+        this.pawns.sync(state.board.pawns);
+      }
     });
-
-    this.scene = new Scene();
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
@@ -59,7 +89,9 @@ export class KSEngine {
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
     this.unsubscribe();
+    this.tools.dispose();
     this.rig.dispose();
+    this.pawns.dispose();
     this.resizeObserver.disconnect();
     this.scene.dispose();
     this.renderer.dispose();
@@ -85,8 +117,23 @@ export class KSEngine {
     this.renderer.render(this.scene, this.rig.camera);
   }
 
-  addUnit() {
-    let unit: Unit;
+  /**
+   * The point on the table under the pointer as [world X, world Z], on or off the map. Null
+   * when the pointer is above the horizon or the point is beyond the camera's far plane.
+   */
+  private pickTable(event: PointerEvent): [number, number] | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointer.set(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      1 - ((event.clientY - rect.top) / rect.height) * 2,
+    );
+    this.raycaster.setFromCamera(this.pointer, this.rig.camera);
+    // The table is flat at y = 0, so the ray's hit on that plane is the exact point.
+    const ray = this.raycaster.ray;
+    const hit = ray.intersectPlane(GROUND, this.hit);
+    // A piece beyond the far plane would be clipped, so it could not be seen once placed.
+    if (!hit || hit.distanceTo(ray.origin) > this.rig.camera.far) return null;
+    return [hit.x, hit.z];
   }
 
   /** The Farley map on a subdivided plane, lit by one directional light and seen from above at an angle. */

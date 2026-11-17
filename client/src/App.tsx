@@ -3,6 +3,7 @@ import "./App.css";
 import { KSEngine } from "./engine/KriegsspielEngine";
 import { GameScreen } from "./interface/GameScreen";
 import { Menu } from "./interface/Menu";
+import { serverConnection } from "./net/ServerConnection";
 import { clientStore } from "./state/store";
 
 type Screen = "menu" | "game";
@@ -12,7 +13,11 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    const engine = new KSEngine(canvasRef.current!, clientStore);
+    const engine = new KSEngine(
+      canvasRef.current!,
+      clientStore,
+      serverConnection,
+    );
     engine.init().catch(console.error);
     return () => {
       engine.dispose();

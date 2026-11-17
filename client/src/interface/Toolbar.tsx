@@ -51,6 +51,13 @@ export function Toolbar() {
           </ToolButton>
         </div>
       )}
+      <ToolButton
+        label="Spawn: click the map to place an infantry unit"
+        active={tool === "spawn"}
+        onClick={() => setTool("spawn")}
+      >
+        <SpawnIcon />
+      </ToolButton>
       <div className={styles.divider} role="separator" />
       <div className={styles.group} role="group" aria-label="Camera">
         <ToolButton
@@ -131,6 +138,15 @@ function BoxIcon() {
   return (
     <Icon>
       <rect x="4" y="4" width="16" height="16" strokeDasharray="3 5" />
+    </Icon>
+  );
+}
+
+function SpawnIcon() {
+  return (
+    <Icon>
+      <rect x="2" y="10" width="14" height="9" rx="1" />
+      <path d="M19 3v6M16 6h6" />
     </Icon>
   );
 }

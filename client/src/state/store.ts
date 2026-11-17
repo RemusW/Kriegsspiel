@@ -2,7 +2,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { EMPTY_BOARD, type Board } from "../model";
 
-export type Tool = "select" | "marquee";
+export type Tool = "select" | "marquee" | "spawn";
 export type MarqueeShape = "box" | "lasso";
 export type Connection = "connecting" | "connected" | "disconnected";
 export type CameraMode = "fly" | "map";
