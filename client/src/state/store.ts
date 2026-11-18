@@ -6,6 +6,8 @@ export type Tool = "select" | "marquee" | "spawn";
 export type MarqueeShape = "box" | "lasso";
 export type Connection = "connecting" | "connected" | "disconnected";
 export type CameraMode = "fly" | "map";
+/** How `select` combines ids with the current selection. */
+export type SelectMode = "replace" | "add" | "toggle";
 
 /**
  * Client state shared by the React UI and the engine. Components read it with
@@ -24,7 +26,8 @@ export interface ClientState {
   setTool: (tool: Tool) => void;
   setMarqueeShape: (shape: MarqueeShape) => void;
   setCameraMode: (mode: CameraMode) => void;
-  setSelection: (ids: number[]) => void;
+  /** Change the selection. Ids that are not on the board are ignored. */
+  select: (ids: number[], mode: SelectMode) => void;
   setBoard: (board: Board) => void;
   setConnection: (connection: Connection) => void;
 }
@@ -40,12 +43,25 @@ export const clientStore = createStore<ClientState>()((set) => ({
   setTool: (tool) => set({ tool }),
   setMarqueeShape: (marqueeShape) => set({ marqueeShape }),
   setCameraMode: (cameraMode) => set({ cameraMode }),
-  setSelection: (selection) => set({ selection }),
+  select: (ids, mode) =>
+    set((state) => {
+      const onBoard = new Set(state.board.pawns.map((unit) => unit.id));
+      const selected = new Set(mode === "replace" ? [] : state.selection);
+      for (const id of ids) {
+        if (!onBoard.has(id)) continue;
+        if (mode === "toggle" && selected.has(id)) {
+          selected.delete(id);
+        } else {
+          selected.add(id);
+        }
+      }
+      return { selection: [...selected] };
+    }),
   setBoard: (board) =>
     set((state) => {
       const ids = new Set(board.pawns.map((unit) => unit.id));
       const kept = state.selection.filter((id) => ids.has(id));
-      // Keep the old array when nothing was dropped, so selection subscribers are not notified.
+      // Keep the old array when nothing was dropped, so subscribers see no selection change.
       const selection =
         kept.length === state.selection.length ? state.selection : kept;
       return { board, selection };

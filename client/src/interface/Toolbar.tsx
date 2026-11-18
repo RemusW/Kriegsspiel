@@ -18,14 +18,14 @@ export function Toolbar() {
       aria-orientation="vertical"
     >
       <ToolButton
-        label="Select: click a unit"
+        label="Select: click a unit, Shift-click to add or remove one"
         active={tool === "select"}
         onClick={() => setTool("select")}
       >
         <SelectIcon />
       </ToolButton>
       <ToolButton
-        label="Marquee"
+        label="Marquee: drag a box to select units, Shift to add them"
         active={tool === "marquee"}
         onClick={() => setTool("marquee")}
       >

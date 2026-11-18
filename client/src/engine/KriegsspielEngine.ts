@@ -18,8 +18,9 @@ import type { ServerConnection } from "../net/ServerConnection";
 import type { ClientStore } from "../state/store";
 import { CameraRig } from "./camera/CameraRig";
 import { OVERLAY_LAYER } from "./layers";
-import { hitTestUnits } from "./pawns/hitTest";
+import { hitTestUnits, unitsInScreenBox } from "./pawns/hitTest";
 import { PawnLayer } from "./pawns/PawnLayer";
+import { MarqueeBox } from "./tools/MarqueeBox";
 import { ToolInput } from "./tools/ToolInput";
 
 /** Width of the map plane in world units. Its depth follows the image's aspect ratio. */
@@ -38,6 +39,7 @@ export class KSEngine {
   private scene: Scene;
   private pawns: PawnLayer;
   private tools: ToolInput;
+  private marquee: MarqueeBox;
 
   private raycaster = new Raycaster();
   private pointer = new Vector2();
@@ -71,11 +73,24 @@ export class KSEngine {
     this.pawns.sync(store.getState().board.pawns);
     this.pawns.showSelection(store.getState().selection);
     this.scene.add(this.pawns.group);
+    this.marquee = new MarqueeBox();
+    this.scene.add(this.marquee.mesh);
 
     this.tools = new ToolInput(canvas, store, {
       pickTable: (event) => this.pickTable(event),
       pickUnit: (event) => this.pickUnit(event),
-      select: (ids) => store.getState().setSelection(ids),
+      pickUnitsInBox: (box) =>
+        unitsInScreenBox(
+          store.getState().board.pawns,
+          this.rig.camera,
+          canvas.getBoundingClientRect(),
+          box,
+        ),
+      showMarquee: (box) =>
+        box
+          ? this.marquee.show(box, canvas.getBoundingClientRect())
+          : this.marquee.hide(),
+      select: (ids, mode) => store.getState().select(ids, mode),
       send: (message) => connection.send(message),
     });
 
@@ -112,6 +127,7 @@ export class KSEngine {
     this.tools.dispose();
     this.rig.dispose();
     this.pawns.dispose();
+    this.marquee.dispose();
     this.resizeObserver.disconnect();
     this.scene.dispose();
     this.renderer.dispose();
