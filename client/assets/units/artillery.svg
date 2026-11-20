@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="256" viewBox="0 0 400 200">
+  <!-- Symbol mask for a unit counter: white is the symbol, transparent is the side colour. -->
+  <g fill="none" stroke="#fff" stroke-width="12" stroke-linejoin="miter">
+    <rect x="24" y="24" width="352" height="152"/>
+  </g>
+  <circle cx="200" cy="100" r="28" fill="#fff"/>
+</svg>
