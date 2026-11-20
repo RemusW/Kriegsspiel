@@ -49,12 +49,20 @@ export class MapPlane {
   /**
    * Show this image, or the blank table with null. Returns once the plane has been rebuilt,
    * with the new depth. Two changes in quick succession can finish out of order, so a load
-   * that is no longer the one wanted is thrown away rather than drawn.
+   * that is no longer the one wanted is thrown away rather than drawn, and one that fails is
+   * only reported if it is still wanted.
    */
   async show(id: string | null): Promise<number> {
     this.wanted = id;
-    const texture =
-      id === null ? null : await new TextureLoader().loadAsync(assetUrl(id));
+    let texture: Texture | null = null;
+    try {
+      if (id !== null) {
+        texture = await new TextureLoader().loadAsync(assetUrl(id));
+      }
+    } catch (error) {
+      if (this.disposed || this.wanted !== id) return this.depth;
+      throw error;
+    }
     if (this.disposed || this.wanted !== id) {
       texture?.dispose();
       return this.depth;

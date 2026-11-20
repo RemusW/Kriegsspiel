@@ -25,13 +25,22 @@ export function FileBar() {
   const viewing = useClientStore((s) => s.viewing);
   const notice = useClientStore((s) => s.notice);
   const setNotice = useClientStore((s) => s.setNotice);
+  // `busy` redraws the buttons as disabled. `working` is what is checked: a ref is one object
+  // for the component's whole life, so the window's drop listener, set up in an earlier
+  // render, still reads the current value.
   const [busy, setBusy] = useState(false);
+  const working = useRef(false);
 
   // Editing is refused while a recorded turn is on screen, so nothing that edits is offered.
   const readOnly = viewing !== null;
 
-  /** Run one file operation, showing the reason if it fails rather than only logging it. */
+  /**
+   * Run one file operation, showing the reason if it fails rather than only logging it.
+   * Ignored while another is running, whether it came from a button or a dropped file.
+   */
   const run = async (what: string, action: () => Promise<void>) => {
+    if (working.current) return;
+    working.current = true;
     setBusy(true);
     setNotice(null);
     try {
@@ -41,12 +50,14 @@ export function FileBar() {
         `${what} failed: ${error instanceof Error ? error.message : error}`,
       );
     } finally {
+      working.current = false;
       setBusy(false);
     }
   };
 
   const openSave = (file: File) => {
-    if (!window.confirm(REPLACE_WARNING)) return;
+    // Checked before asking, so a file dropped mid-operation brings up no dialog.
+    if (working.current || !window.confirm(REPLACE_WARNING)) return;
     void run("Open", () => loadGame(file));
   };
 

@@ -46,6 +46,11 @@ pub const FORMAT: u32 = 1;
 /// [`MAX_ASSET_BYTES`] each.
 pub const MAX_SAVE_BYTES: usize = 256 * 1024 * 1024;
 
+/// The largest `manifest.json` a save may hold once inflated. Far above any real document, which
+/// is a few kilobytes per hundred units; it exists so a small, highly compressed entry cannot
+/// expand into gigabytes of memory.
+pub const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
+
 const MANIFEST_PATH: &str = "manifest.json";
 const MIMETYPE_PATH: &str = "mimetype";
 const ASSETS_DIR: &str = "assets/";
@@ -88,6 +93,8 @@ pub enum SaveError {
     NoManifest,
     /// `manifest.json` is not the JSON this build expects.
     Manifest(serde_json::Error),
+    /// `manifest.json` inflates to more than [`MAX_MANIFEST_BYTES`].
+    ManifestTooLarge,
     /// Written by a newer build, which may have put things in it that would be lost.
     Future { format: u32 },
     /// An entry the manifest names is missing, misnamed, or does not hash to the id it is
@@ -106,6 +113,9 @@ impl fmt::Display for SaveError {
             Self::Io(error) => write!(f, "{error}"),
             Self::NoManifest => write!(f, "no {MANIFEST_PATH}: this is not a save file"),
             Self::Manifest(error) => write!(f, "{MANIFEST_PATH} could not be read: {error}"),
+            Self::ManifestTooLarge => {
+                write!(f, "{MANIFEST_PATH} is over the {MAX_MANIFEST_BYTES} byte limit")
+            }
             Self::Future { format } => write!(
                 f,
                 "saved by a newer version (format {format}, this build reads {FORMAT})"
@@ -137,20 +147,20 @@ impl From<serde_json::Error> for SaveError {
     }
 }
 
-/// Write a save: the document, and every image the live board or any recorded turn names.
+/// Write a save: the live board, the recorded turns, and every image either of them names.
 /// Images nothing refers to any more are left out, so a save does not carry the maps an
-/// umpire tried and replaced.
-pub fn pack(doc: &Doc, assets: &AssetStore) -> Result<Vec<u8>, SaveError> {
+/// umpire tried and replaced. Undo history is not saved, so it is not asked for.
+pub fn pack(board: &Board, turns: &[Turn], assets: &AssetStore) -> Result<Vec<u8>, SaveError> {
     // Gather the images first, so the manifest can be written before them and an umpire who
     // unzips a save finds the document at the top.
     let mut manifest = Manifest {
         format: FORMAT,
-        board: doc.board.clone(),
-        turns: doc.turns.clone(),
+        board: board.clone(),
+        turns: turns.to_vec(),
         assets: BTreeMap::new(),
     };
     let mut entries: Vec<(String, Bytes)> = Vec::new();
-    for id in referenced(doc) {
+    for id in referenced(board, turns) {
         // The store is append-only and every command that names an image is checked against
         // it, so a missing one is a bug. Fail loudly rather than write a file that cannot be
         // loaded back.
@@ -200,9 +210,16 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
             Err(zip::result::ZipError::FileNotFound) => return Err(SaveError::NoManifest),
             Err(error) => return Err(error.into()),
         };
-        let mut text = String::new();
-        entry.read_to_string(&mut text)?;
-        serde_json::from_str(&text)?
+        // Capped like the images below, so a deflated entry cannot expand without limit.
+        let mut text = Vec::new();
+        entry
+            .by_ref()
+            .take(MAX_MANIFEST_BYTES as u64 + 1)
+            .read_to_end(&mut text)?;
+        if text.len() > MAX_MANIFEST_BYTES {
+            return Err(SaveError::ManifestTooLarge);
+        }
+        serde_json::from_slice(&text)?
     };
     if manifest.format > FORMAT {
         return Err(SaveError::Future {
@@ -244,7 +261,7 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
     doc.board = manifest.board;
     doc.turns = manifest.turns;
 
-    for id in referenced(&doc) {
+    for id in referenced(&doc.board, &doc.turns) {
         if !assets.contains(&id) {
             return Err(SaveError::MissingAsset { id });
         }
@@ -254,8 +271,8 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
 
 /// Every image id the document names: the live board's and every recorded turn's. A turn may
 /// still use a map image the live board has moved on from, so a save has to keep both.
-fn referenced(doc: &Doc) -> BTreeSet<AssetId> {
-    let boards = std::iter::once(&doc.board).chain(doc.turns.iter().map(|turn| &turn.board));
+fn referenced(board: &Board, turns: &[Turn]) -> BTreeSet<AssetId> {
+    let boards = std::iter::once(board).chain(turns.iter().map(|turn| &turn.board));
     boards
         .flat_map(Board::images)
         .map(ToOwned::to_owned)
@@ -298,14 +315,14 @@ mod tests {
     #[test]
     fn a_save_round_trips() {
         let (doc, assets) = saved_game();
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let (back, back_assets) = unpack(&file).unwrap();
 
         assert_eq!(back.board, doc.board);
         assert_eq!(back.turns, doc.turns);
         assert_eq!(back_assets.len(), assets.len());
         // The images come back byte for byte, under the same ids.
-        for id in referenced(&doc) {
+        for id in referenced(&doc.board, &doc.turns) {
             assert_eq!(
                 back_assets.get(&id).map(|a| &a.bytes),
                 assets.get(&id).map(|a| &a.bytes),
@@ -317,7 +334,7 @@ mod tests {
     #[test]
     fn a_save_is_a_zip_that_names_itself() {
         let (doc, assets) = saved_game();
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
 
         assert_eq!(&file[..4], b"PK\x03\x04", "a zip, openable by any tool");
         // The media type sits at a fixed offset: the 30-byte local header, then the entry
@@ -329,7 +346,7 @@ mod tests {
     #[test]
     fn the_manifest_is_readable_json() {
         let (doc, assets) = saved_game();
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
 
         let mut zip = ZipArchive::new(Cursor::new(&file)).unwrap();
         let mut text = String::new();
@@ -359,7 +376,7 @@ mod tests {
             doc.board.unit_mut(id).unwrap().pawn.image = Some(shared.clone());
         }
 
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let mut zip = ZipArchive::new(Cursor::new(&file)).unwrap();
         let paths = entry_paths(&mut zip);
         assert_eq!(
@@ -377,13 +394,13 @@ mod tests {
         let replaced = doc.board.map_image.take();
         assert!(replaced.is_some());
         // The recorded turn still holds the map, so it must still be saved.
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let (_, back) = unpack(&file).unwrap();
         assert_eq!(back.len(), 2);
 
         // With no turn to hold it, the map image goes.
         doc.turns.clear();
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let (_, back) = unpack(&file).unwrap();
         assert_eq!(back.len(), 1, "only the unit's image is still in use");
     }
@@ -394,7 +411,7 @@ mod tests {
         doc.edit(7, |board| {
             board.spawn(UnitKind::Artillery, Side::Red, [9.0, 9.0]);
         });
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
 
         let (mut back, _) = unpack(&file).unwrap();
         assert_eq!(back.board.pawns.len(), 3, "the edit itself is saved");
@@ -424,7 +441,7 @@ mod tests {
     #[test]
     fn a_newer_format_is_refused_rather_than_half_read() {
         let (doc, assets) = saved_game();
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let mut repacked = repack_manifest(&file, |json| {
             json["format"] = serde_json::json!(FORMAT + 1);
         });
@@ -444,7 +461,7 @@ mod tests {
     #[test]
     fn a_manifest_that_does_not_match_its_images_is_refused() {
         let (doc, assets) = saved_game();
-        let file = pack(&doc, &assets).unwrap();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let map = doc.board.map_image.clone().unwrap();
 
         // An entry filed under an id that is not the hash of its bytes.
@@ -467,6 +484,21 @@ mod tests {
             SaveError::MissingAsset { id } => assert_eq!(id, "1".repeat(64)),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_manifest_over_the_limit_is_refused_before_it_is_parsed() {
+        let (doc, assets) = saved_game();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
+        // Still valid JSON, and an unknown field would otherwise be ignored: only the size
+        // can be what refuses it.
+        let bloated = repack_manifest(&file, |json| {
+            json["padding"] = serde_json::json!(" ".repeat(MAX_MANIFEST_BYTES));
+        });
+        assert!(matches!(
+            unpack(&bloated).unwrap_err(),
+            SaveError::ManifestTooLarge
+        ));
     }
 
     /// Every entry in an archive, in the order it was written.

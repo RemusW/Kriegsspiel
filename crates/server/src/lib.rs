@@ -32,7 +32,7 @@ use bytes::Bytes;
 use tokio::sync::{RwLock, watch};
 use tower_http::cors::{Any, CorsLayer};
 
-use assets::{AssetId, AssetStore, is_asset_id};
+use assets::{Asset, AssetId, AssetStore, is_asset_id};
 use model::{Doc, MAX_SCALE, MIN_SCALE, Side, Step, UmpireId, UnitKind};
 use protocol::{ClientMessage, Placement, ServerMessage, TurnInfo};
 use save::{MAX_SAVE_BYTES, SAVE_MIME, SaveError};
@@ -70,23 +70,32 @@ impl Game {
         }
     }
 
-    /// Store one uploaded image and return its id, or say why it was refused.
+    /// Store one uploaded image and return its id, or say why it was refused. The image is
+    /// checked and hashed before the store is locked, so commands are not held up behind it.
     async fn add_asset(&self, bytes: Bytes) -> Result<AssetId, assets::AssetError> {
-        self.assets.write().await.insert(bytes)
+        let (id, asset) = blocking(move || Asset::read(bytes)).await?;
+        self.assets.write().await.add(id.clone(), asset);
+        Ok(id)
     }
 
-    /// Write the whole game to a save file.
+    /// Write the whole game to a save file. The locks are held only to copy what goes in it,
+    /// which shares the images' bytes rather than copying them, so edits carry on while the
+    /// file is written.
     pub async fn save(&self) -> Result<Vec<u8>, SaveError> {
-        let doc = self.doc.read().await;
-        let assets = self.assets.read().await;
-        save::pack(&doc, &assets)
+        let (board, turns, assets) = {
+            let doc = self.doc.read().await;
+            let assets = self.assets.read().await;
+            (doc.board.clone(), doc.turns.clone(), assets.clone())
+        };
+        blocking(move || save::pack(&board, &turns, &assets)).await
     }
 
     /// Replace the game with the contents of a save file, and tell every client. Nothing is
     /// changed unless the whole file reads, so a damaged file leaves the game alone.
     /// Every umpire's undo history goes with the document that held it.
-    pub async fn load(&self, bytes: &[u8]) -> Result<(), SaveError> {
-        let (loaded, loaded_assets) = save::unpack(bytes)?;
+    pub async fn load(&self, bytes: Bytes) -> Result<(), SaveError> {
+        // Read before any lock is taken: the game carries on while the file is checked.
+        let (loaded, loaded_assets) = blocking(move || save::unpack(&bytes)).await?;
         {
             let mut doc = self.doc.write().await;
             let mut assets = self.assets.write().await;
@@ -150,6 +159,15 @@ impl Game {
         };
         send(socket, &snapshot).await
     }
+}
+
+/// Run slow, synchronous work (hashing images, zipping a save) on tokio's thread pool for
+/// blocking work. On an async worker it would hold that thread until done, stalling every
+/// connection the worker serves.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    tokio::task::spawn_blocking(work)
+        .await
+        .expect("blocking work does not panic")
 }
 
 /// Send one message to a client. Fails once the connection has closed.
@@ -386,7 +404,7 @@ async fn download(State(game): State<Game>) -> Response {
 
 /// Replace the game with an uploaded save file. The body is the file itself.
 async fn upload(State(game): State<Game>, body: Bytes) -> Response {
-    match game.load(&body).await {
+    match game.load(body).await {
         // The board that comes back over the socket is the answer.
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         // The file came from whoever is at the keyboard, so the reason goes back to be shown.
@@ -932,7 +950,7 @@ mod tests {
         // Into a different game, to show the file carries everything and needs nothing of
         // the server that wrote it.
         let other = Game::new(Doc::default());
-        other.load(&file).await.unwrap();
+        other.load(file.into()).await.unwrap();
         let doc = other.doc.read().await;
         assert_eq!(doc.board.map_image, Some(id.clone()));
         assert_eq!(doc.board.pawns[0].pawn.pos, [4.0, 5.0]);
@@ -946,7 +964,7 @@ mod tests {
         let game = Game::demo();
         let before = game.doc.read().await.board.pawns.len();
 
-        let error = game.load(b"not a save file").await.unwrap_err();
+        let error = game.load(Bytes::from_static(b"not a save file")).await.unwrap_err();
         assert!(matches!(error, SaveError::Archive(_)), "{error}");
         assert_eq!(game.doc.read().await.board.pawns.len(), before);
     }

@@ -83,9 +83,33 @@ impl fmt::Display for AssetError {
 
 impl std::error::Error for AssetError {}
 
+impl Asset {
+    /// Check these bytes are an image the store accepts, and hash them for their id. The slow
+    /// part of adding an image, and it needs no store, so the server does it without holding
+    /// the store's lock.
+    pub fn read(bytes: Bytes) -> Result<(AssetId, Asset), AssetError> {
+        if bytes.len() > MAX_ASSET_BYTES {
+            return Err(AssetError::TooLarge { bytes: bytes.len() });
+        }
+        let (kind, width, height) = probe(&bytes)?;
+        let id = asset_id(&bytes);
+        Ok((
+            id,
+            Asset {
+                kind,
+                width,
+                height,
+                bytes,
+            },
+        ))
+    }
+}
+
 /// Every image one game holds, keyed by content hash. Append-only within a game: ids in the
 /// board, in a recorded turn and in an undo step must all keep resolving.
-#[derive(Debug, Default)]
+///
+/// Cloning shares every image's bytes, so a copy costs only the map of ids.
+#[derive(Clone, Debug, Default)]
 pub struct AssetStore {
     by_id: HashMap<AssetId, Asset>,
 }
@@ -93,18 +117,14 @@ pub struct AssetStore {
 impl AssetStore {
     /// Store an image and return its id. An image already held is not stored twice.
     pub fn insert(&mut self, bytes: Bytes) -> Result<AssetId, AssetError> {
-        if bytes.len() > MAX_ASSET_BYTES {
-            return Err(AssetError::TooLarge { bytes: bytes.len() });
-        }
-        let (kind, width, height) = probe(&bytes)?;
-        let id = asset_id(&bytes);
-        self.by_id.entry(id.clone()).or_insert(Asset {
-            kind,
-            width,
-            height,
-            bytes,
-        });
+        let (id, asset) = Asset::read(bytes)?;
+        self.add(id.clone(), asset);
         Ok(id)
+    }
+
+    /// Store an image [`Asset::read`] has already checked, under the id it gave.
+    pub fn add(&mut self, id: AssetId, asset: Asset) {
+        self.by_id.entry(id).or_insert(asset);
     }
 
     pub fn get(&self, id: &str) -> Option<&Asset> {
