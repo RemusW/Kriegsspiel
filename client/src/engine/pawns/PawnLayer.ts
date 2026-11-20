@@ -160,14 +160,14 @@ export class PawnLayer {
 
   /**
    * Move every block on towards its unit by `dt` seconds. `lifted` are the units being held,
-   * which are carried above the table; the rest rest on it.
+   * which are carried above the table; the rest rest on it. Left out, none are held.
    */
-  update(dt: number, lifted: ReadonlySet<number>) {
+  update(dt: number, lifted?: ReadonlySet<number>) {
     this.unstepped += dt;
     while (this.unstepped >= SPRING_STEP) {
       this.unstepped -= SPRING_STEP;
       for (const [id, view] of this.views) {
-        step(view.motion, lifted.has(id), SPRING_STEP);
+        step(view.motion, lifted?.has(id) ?? false, SPRING_STEP);
       }
     }
     for (const view of this.views.values()) this.place(view);
