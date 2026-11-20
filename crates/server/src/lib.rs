@@ -19,7 +19,7 @@ use std::{
 };
 
 use axum::{
-    Json, Router,
+    Router,
     extract::{
         DefaultBodyLimit, Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
@@ -32,10 +32,10 @@ use bytes::Bytes;
 use tokio::sync::{RwLock, watch};
 use tower_http::cors::{Any, CorsLayer};
 
-use assets::{Asset, AssetStore, is_asset_id};
+use assets::{AssetId, AssetStore, is_asset_id};
 use model::{Doc, MAX_SCALE, MIN_SCALE, Side, Step, UmpireId, UnitKind};
 use protocol::{ClientMessage, Placement, ServerMessage, TurnInfo};
-use save::{MAX_SAVE_BYTES, SAVE_EXTENSION, SAVE_MIME, SaveError};
+use save::{MAX_SAVE_BYTES, SAVE_MIME, SaveError};
 
 pub const DEFAULT_PORT: u16 = 7878;
 
@@ -70,12 +70,9 @@ impl Game {
         }
     }
 
-    /// Store one uploaded image and return it, or say why it was refused.
-    async fn add_asset(&self, bytes: Bytes) -> Result<(String, Asset), assets::AssetError> {
-        let mut assets = self.assets.write().await;
-        let id = assets.insert(bytes)?;
-        let asset = assets.get(&id).expect("just inserted").clone();
-        Ok((id, asset))
+    /// Store one uploaded image and return its id, or say why it was refused.
+    async fn add_asset(&self, bytes: Bytes) -> Result<AssetId, assets::AssetError> {
+        self.assets.write().await.insert(bytes)
     }
 
     /// Write the whole game to a save file.
@@ -88,9 +85,8 @@ impl Game {
     /// Replace the game with the contents of a save file, and tell every client. Nothing is
     /// changed unless the whole file reads, so a damaged file leaves the game alone.
     /// Every umpire's undo history goes with the document that held it.
-    pub async fn load(&self, bytes: &[u8]) -> Result<(usize, usize), SaveError> {
+    pub async fn load(&self, bytes: &[u8]) -> Result<(), SaveError> {
         let (loaded, loaded_assets) = save::unpack(bytes)?;
-        let counts = (loaded.board.pawns.len(), loaded.turns.len());
         {
             let mut doc = self.doc.write().await;
             let mut assets = self.assets.write().await;
@@ -100,7 +96,7 @@ impl Game {
         // Umpires viewing a turn are sent the live board: the turns they were stepping
         // through belong to the game that was just replaced.
         self.changed.send_replace(());
-        Ok(counts)
+        Ok(())
     }
 
     /// A game with four fixed units on the live board.
@@ -196,12 +192,7 @@ fn apply(
             if !units.iter().all(valid_placement) {
                 return Effect::Me;
             }
-            // Another umpire may have removed a unit mid-drag: the rest still change, but with
-            // nothing left to change there is no reason to wake every connection.
-            let any_known = units
-                .iter()
-                .any(|p| doc.board.pawns.iter().any(|unit| unit.id == p.id));
-            if !any_known {
+            if !any_on_board(doc, units.iter().map(|p| p.id)) {
                 return Effect::Me;
             }
             edited(doc.edit(umpire, |board| {
@@ -251,12 +242,7 @@ fn apply(
             if !known_asset(assets, &asset) {
                 return Effect::Me;
             }
-            // As with `Place`: with no unit left to change there is nothing to wake everyone
-            // for, but the sender is still answered.
-            let any_known = units
-                .iter()
-                .any(|id| doc.board.pawns.iter().any(|unit| unit.id == *id));
-            if !any_known {
+            if !any_on_board(doc, units.iter().copied()) {
                 return Effect::Me;
             }
             edited(doc.edit(umpire, |board| {
@@ -268,6 +254,14 @@ fn apply(
             }))
         }
     }
+}
+
+/// Whether any of these units is still on the live board. Another umpire may have removed
+/// them mid-drag: the rest still change, but with nothing left to change there is no reason
+/// to wake every connection, and the sender is still answered.
+fn any_on_board(doc: &Doc, ids: impl IntoIterator<Item = u64>) -> bool {
+    ids.into_iter()
+        .any(|id| doc.board.pawns.iter().any(|unit| unit.id == id))
 }
 
 /// Whether an image a command names can be used: either it is already in the store, or the
@@ -379,17 +373,8 @@ async fn asset(Path(id): Path<String>, State(game): State<Game>) -> Response {
 /// The whole game as one save file, offered as a download.
 async fn download(State(game): State<Game>) -> Response {
     match game.save().await {
-        Ok(file) => (
-            [
-                (header::CONTENT_TYPE, SAVE_MIME.to_owned()),
-                (
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"kriegsspiel.{SAVE_EXTENSION}\""),
-                ),
-            ],
-            file,
-        )
-            .into_response(),
+        // No `Content-Disposition`: the client names the file when it hands it to the browser.
+        Ok(file) => ([(header::CONTENT_TYPE, SAVE_MIME)], file).into_response(),
         Err(error) => {
             // Saving reads state the server already holds, so a failure here is a bug in the
             // writer rather than anything the umpire did.
@@ -402,9 +387,8 @@ async fn download(State(game): State<Game>) -> Response {
 /// Replace the game with an uploaded save file. The body is the file itself.
 async fn upload(State(game): State<Game>, body: Bytes) -> Response {
     match game.load(&body).await {
-        Ok((pawns, turns)) => {
-            Json(serde_json::json!({ "pawns": pawns, "turns": turns })).into_response()
-        }
+        // The board that comes back over the socket is the answer.
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         // The file came from whoever is at the keyboard, so the reason goes back to be shown.
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
@@ -450,21 +434,16 @@ async fn client(mut socket: WebSocket, game: Game) {
                 // A binary frame is an image being uploaded: the only thing a client sends
                 // that is not JSON. The command that uses it follows as its own message, and
                 // a WebSocket keeps order, so the image is always in the store by the time
-                // that command is applied.
+                // that command is applied. Only a refusal is answered: the client hashed the
+                // file itself, so an acceptance would tell it nothing.
                 Some(Ok(Message::Binary(bytes))) => {
-                    let reply = match game.add_asset(bytes).await {
-                        Ok((id, asset)) => ServerMessage::AssetAdded {
-                            id,
-                            mime: asset.kind.mime().to_owned(),
-                            width: asset.width,
-                            height: asset.height,
-                        },
-                        Err(error) => ServerMessage::AssetRejected {
+                    if let Err(error) = game.add_asset(bytes).await {
+                        let reply = ServerMessage::AssetRejected {
                             reason: error.to_string(),
-                        },
-                    };
-                    if send(&mut socket, &reply).await.is_err() {
-                        break;
+                        };
+                        if send(&mut socket, &reply).await.is_err() {
+                            break;
+                        }
                     }
                 }
                 Some(Ok(Message::Close(_)) | Err(_)) | None => break,
@@ -941,7 +920,7 @@ mod tests {
     #[tokio::test]
     async fn a_game_saves_and_loads_itself() {
         let game = Game::new(Doc::default());
-        let (id, _) = game.add_asset(test_png(1024, 512)).await.unwrap();
+        let id = game.add_asset(test_png(1024, 512)).await.unwrap();
         game.receive(0, r#"{"type":"spawn","kind":"Cavalry","side":"Red","pos":[4,5]}"#)
             .await;
         game.receive(0, &format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#))
@@ -953,7 +932,7 @@ mod tests {
         // Into a different game, to show the file carries everything and needs nothing of
         // the server that wrote it.
         let other = Game::new(Doc::default());
-        assert_eq!(other.load(&file).await.unwrap(), (1, 1));
+        other.load(&file).await.unwrap();
         let doc = other.doc.read().await;
         assert_eq!(doc.board.map_image, Some(id.clone()));
         assert_eq!(doc.board.pawns[0].pawn.pos, [4.0, 5.0]);
@@ -978,7 +957,7 @@ mod tests {
         use tower::ServiceExt;
 
         let game = Game::new(Doc::default());
-        let (id, _) = game.add_asset(test_png(8, 8)).await.unwrap();
+        let id = game.add_asset(test_png(8, 8)).await.unwrap();
         let app = router(game);
 
         let from_the_page = |method: &str, uri: String| {
@@ -1016,7 +995,7 @@ mod tests {
         let game = Game::new(Doc::default());
         let changed = game.changed.subscribe();
 
-        let (id, _) = game.add_asset(test_png(8, 8)).await.unwrap();
+        let id = game.add_asset(test_png(8, 8)).await.unwrap();
         // Storing an image changes no board, so no client is sent one: a 16 MB map arriving
         // must not make every player redraw. The command that uses it is what they hear.
         assert!(!changed.has_changed().unwrap());

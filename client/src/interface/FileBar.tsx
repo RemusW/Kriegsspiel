@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { loadGame, saveGame, setMapImage, setUnitImage } from "../net/assets";
+import { SAVE_EXTENSION, SAVE_MIME } from "../protocol";
 import { useClientStore } from "../state/store";
 import styles from "./FileBar.module.css";
 
 /** What the file dialogs offer, matching the formats the server's asset store accepts. */
 const IMAGE_TYPES = "image/png,image/jpeg";
-const SAVE_TYPES = ".ksg,application/vnd.kriegsspiel+zip";
+const SAVE_TYPES = `.${SAVE_EXTENSION},${SAVE_MIME}`;
 
 /** A save file holds the whole game, so replacing the one in play is worth a confirmation. */
 const REPLACE_WARNING =

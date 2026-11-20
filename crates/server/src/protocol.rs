@@ -21,16 +21,6 @@ pub enum ServerMessage {
         /// live board.
         viewing: Option<usize>,
     },
-    /// An image a client uploaded is now in the store and may be fetched from
-    /// `/assets/{id}`. A client that hashed the file itself already knows the id, so this
-    /// confirms the upload rather than telling it something it needs; it is the id that says
-    /// which upload was accepted, no request id being needed for that.
-    AssetAdded {
-        id: String,
-        mime: String,
-        width: u32,
-        height: u32,
-    },
     /// An upload the server would not take, with the reason to show the umpire. Nothing was
     /// stored, so the command that was going to use the image will be refused too.
     AssetRejected { reason: String },
@@ -109,7 +99,6 @@ pub enum ClientMessage {
     /// Show this umpire one recorded turn, or the live board with `null`. Only this umpire's
     /// view changes; the others keep working on the live board.
     ViewTurn {
-        #[serde(default)]
         turn: Option<usize>,
     },
     /// Copy the turn this umpire is viewing into the live board, as one undoable edit, and
@@ -119,14 +108,12 @@ pub enum ClientMessage {
     /// the store: upload the bytes first, then send this with the id. An id the store does
     /// not hold is refused, so the board can never name an image a save would not find.
     SetMapImage {
-        #[serde(default)]
         asset: Option<String>,
     },
     /// Put a stored image on these units' top faces, or `null` to go back to the generated
     /// symbol. One command for the whole selection, so it is one undo step.
     SetUnitImage {
         units: Vec<u64>,
-        #[serde(default)]
         asset: Option<String>,
     },
 }

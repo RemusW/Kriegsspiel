@@ -38,9 +38,6 @@ use crate::{
 /// know the format that it may still open it as a zip.
 pub const SAVE_MIME: &str = "application/vnd.kriegsspiel+zip";
 
-/// The extension a save is offered under.
-pub const SAVE_EXTENSION: &str = "ksg";
-
 /// The format this build writes. [`unpack`] refuses a file from a newer build rather than
 /// loading it with the parts it does not understand silently dropped.
 pub const FORMAT: u32 = 1;
@@ -222,19 +219,9 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
         let mut entry = zip
             .by_name(&info.path)
             .map_err(|_| SaveError::BadAsset { id: id.clone() })?;
-        // The declared size is checked before anything is read, so a file claiming a huge
-        // entry is turned away instead of being unpacked into memory.
-        if entry.size() > MAX_ASSET_BYTES as u64 {
-            return Err(SaveError::Image {
-                id: id.clone(),
-                error: AssetError::TooLarge {
-                    bytes: entry.size() as usize,
-                },
-            });
-        }
         let mut data = Vec::new();
-        // The size above is only what the entry claims: cap the read as well, so a deflated
-        // entry cannot expand without limit.
+        // Capped one byte past the limit, so a deflated entry cannot expand without limit and
+        // an oversized one still reaches the store's own size check below.
         entry
             .by_ref()
             .take(MAX_ASSET_BYTES as u64 + 1)

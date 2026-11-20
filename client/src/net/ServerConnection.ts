@@ -63,14 +63,8 @@ export class ServerConnection {
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data as string) as ServerMessage;
       switch (message.type) {
-        case "snapshot": {
-          const { board, turns, viewing } = message;
-          showView({ board, turns, viewing });
-          break;
-        }
-        case "assetAdded":
-          // The client already worked out this id by hashing the file, so there is nothing
-          // to do but check the two agree.
+        case "snapshot":
+          showView(message);
           break;
         case "assetRejected":
           this.store.getState().setNotice(message.reason);

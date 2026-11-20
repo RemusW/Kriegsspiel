@@ -33,7 +33,7 @@ turns: Array<TurnInfo>,
  * The recorded turn this client is viewing, as an index into `turns`. `None` is the
  * live board.
  */
-viewing: number | null, } | { "type": "assetAdded", id: string, mime: string, width: number, height: number, } | { "type": "assetRejected", reason: string, };
+viewing: number | null, } | { "type": "assetRejected", reason: string, };
 
 /**
  * What a client is told about one recorded turn: enough to list and label it, without the

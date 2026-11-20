@@ -4,6 +4,7 @@
 // here means the client knows the id before the upload has even finished, so it can send the
 // command that uses the image straight after the bytes without waiting for a reply.
 
+import { SAVE_EXTENSION } from "../protocol";
 import { httpEndpoint } from "./endpoint";
 import { serverConnection } from "./ServerConnection";
 
@@ -64,7 +65,7 @@ function saveName(): string {
     `${now.getMonth() + 1}`.padStart(2, "0"),
     `${now.getDate()}`.padStart(2, "0"),
   ].join("-");
-  return `kriegsspiel-${stamp}.ksg`;
+  return `kriegsspiel-${stamp}.${SAVE_EXTENSION}`;
 }
 
 /**
