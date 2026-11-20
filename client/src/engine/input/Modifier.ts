@@ -22,6 +22,9 @@ export interface ChordState {
   readonly metaKey: boolean;
 }
 
+/** Every chord, to compare a binding against the keys actually held. */
+export const CHORDS: readonly Chord[] = ["shift", "ctrl", "alt", "meta"];
+
 /** No modifier key held, for before the first event and after the window loses focus. */
 export const NO_CHORDS: ChordState = {
   shiftKey: false,

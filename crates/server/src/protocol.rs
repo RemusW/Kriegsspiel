@@ -38,4 +38,9 @@ pub enum ClientMessage {
     /// Put units at new positions. One drag sends one command, so moving several units at
     /// once is one undo step. Ids that are no longer on the board are skipped.
     Move { moves: Vec<UnitMove> },
+    /// Take back this umpire's last edit. Other umpires' later changes stay, and any field
+    /// one of them has changed since is left alone.
+    Undo,
+    /// Put back this umpire's last undone edit.
+    Redo,
 }

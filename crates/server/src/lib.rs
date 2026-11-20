@@ -22,7 +22,7 @@ use axum::{
 };
 use tokio::sync::{RwLock, watch};
 
-use model::{Doc, Side, UmpireId, UnitKind};
+use model::{Doc, Side, Step, UmpireId, UnitKind};
 use protocol::{ClientMessage, ServerMessage};
 
 pub const DEFAULT_PORT: u16 = 7878;
@@ -131,12 +131,26 @@ fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
                 }
             }))
         }
+        // Each umpire has their own history, so an undo needs no checking: it can only take
+        // back something this umpire did.
+        ClientMessage::Undo => stepped(doc.undo(umpire)),
+        ClientMessage::Redo => stepped(doc.redo(umpire)),
     }
 }
 
 /// A refused edit still sends its umpire a board, so their client stops showing it.
 fn edited(applied: bool) -> Effect {
     if applied { Effect::Everyone } else { Effect::Me }
+}
+
+/// An empty history changed nothing anywhere, so nobody is told; a step refused because the
+/// umpire is viewing a recorded turn answers them, so their client is not left waiting.
+fn stepped(step: Step) -> Effect {
+    match step {
+        Step::Empty => Effect::None,
+        Step::ReadOnly => Effect::Me,
+        Step::Applied | Step::Partial => Effect::Everyone,
+    }
 }
 
 pub fn router(game: Game) -> Router {
@@ -289,6 +303,72 @@ mod tests {
         // Read-only for this umpire, but their client is already showing the drag.
         assert_eq!(apply(&mut doc, 0, move_to(&[(0, [9.0, 9.0])])), Effect::Me);
         assert_eq!(doc.board.pawns[0].pawn.pos, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn undo_takes_back_the_last_move_and_redo_puts_it_back() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, move_to(&[(0, [5.0, 6.0])]));
+
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Undo), Effect::Everyone);
+        assert_eq!(doc.board.pawns[0].pawn.pos, [0.0, 0.0]);
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Redo), Effect::Everyone);
+        assert_eq!(doc.board.pawns[0].pawn.pos, [5.0, 6.0]);
+    }
+
+    #[test]
+    fn undo_only_takes_back_the_senders_own_edits() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, move_to(&[(0, [5.0, 6.0])]));
+        apply(&mut doc, 1, move_to(&[(1, [7.0, 8.0])]));
+
+        // Umpire 1 undoing leaves umpire 0's move where it is.
+        assert_eq!(apply(&mut doc, 1, ClientMessage::Undo), Effect::Everyone);
+        assert_eq!(doc.board.pawns[0].pawn.pos, [5.0, 6.0]);
+        assert_eq!(doc.board.pawns[1].pawn.pos, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn undo_with_nothing_to_take_back_tells_nobody() {
+        let mut doc = two_units();
+        // No board to send: an empty history is not a refusal, nothing was being shown.
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Undo), Effect::None);
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Redo), Effect::None);
+    }
+
+    #[test]
+    fn a_new_edit_drops_what_was_undone() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, move_to(&[(0, [5.0, 6.0])]));
+        apply(&mut doc, 0, ClientMessage::Undo);
+        apply(&mut doc, 0, move_to(&[(0, [1.0, 2.0])]));
+
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Redo), Effect::None);
+        assert_eq!(doc.board.pawns[0].pawn.pos, [1.0, 2.0]);
+    }
+
+    #[test]
+    fn undo_while_viewing_a_turn_answers_the_sender() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, move_to(&[(0, [5.0, 6.0])]));
+        doc.record_turn();
+        doc.step_turn(0, false);
+        assert!(doc.viewing(0).is_some());
+
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Undo), Effect::Me);
+        assert_eq!(doc.board.pawns[0].pawn.pos, [5.0, 6.0]);
+    }
+
+    #[test]
+    fn history_commands_parse_from_client_json() {
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(r#"{"type":"undo"}"#).unwrap(),
+            ClientMessage::Undo
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(r#"{"type":"redo"}"#).unwrap(),
+            ClientMessage::Redo
+        );
     }
 
     #[test]

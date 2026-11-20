@@ -14,6 +14,7 @@ import type { ServerConnection } from "../net/ServerConnection";
 import type { ClientStore } from "../state/store";
 import { CameraRig } from "./camera/CameraRig";
 import type { EditorContext } from "./EditorContext";
+import { KeyInput } from "./input/KeyInput";
 import { Keymap } from "./input/Keymap";
 import { OVERLAY_LAYER } from "./layers";
 import { PawnLayer } from "./pawns/PawnLayer";
@@ -38,6 +39,7 @@ export class KSEngine {
   private picker: Picker;
   private keymap: Keymap;
   private tools: ToolInput;
+  private keys: KeyInput;
   private marquee: MarqueeBox;
 
   /** Edits asked of the server and not yet seen in a board. */
@@ -100,6 +102,7 @@ export class KSEngine {
       send: (message) => connection.send(message),
     };
     this.tools = new ToolInput(canvas, store, this.keymap, context);
+    this.keys = new KeyInput(this.keymap, context);
 
     this.unsubscribe = store.subscribe((state, previous) => {
       if (state.cameraMode !== previous.cameraMode) {
@@ -138,6 +141,7 @@ export class KSEngine {
     this.renderer.setAnimationLoop(null);
     this.unsubscribe();
     this.tools.dispose();
+    this.keys.dispose();
     this.rig.dispose();
     this.pawns.dispose();
     this.marquee.dispose();

@@ -1,4 +1,5 @@
 import type { Keymap } from "../input/Keymap";
+import { isTextInput } from "../input/textInput";
 import {
   chordsOf,
   NO_CHORDS,
@@ -78,13 +79,4 @@ export class KeyState {
     this.pressed.clear();
     this.chords = NO_CHORDS;
   };
-}
-
-function isTextInput(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
-  );
 }
