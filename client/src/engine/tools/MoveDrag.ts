@@ -34,7 +34,7 @@ export function grabUnits(
   const active = context.manipulation();
   if (active) {
     return active.has(id)
-      ? new MoveDrag(context, origin, active.join())
+      ? new MoveDrag(context, origin, active.join(true))
       : IGNORED;
   }
   if (!context.selection().includes(id)) {
@@ -42,7 +42,7 @@ export function grabUnits(
   }
   const manipulation = context.manipulate();
   return manipulation
-    ? new MoveDrag(context, origin, manipulation.join())
+    ? new MoveDrag(context, origin, manipulation.join(true))
     : IGNORED;
 }
 

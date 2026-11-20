@@ -25,6 +25,8 @@ interface Contribution {
   logScale: number;
 }
 
+const NOTHING: ReadonlySet<number> = new Set();
+
 /**
  * One input taking part in a manipulation: a drag, or a held key. It says how far it has
  * changed the units, and when it is done.
@@ -37,7 +39,11 @@ export class ManipulationInput {
     logScale: 0,
   };
 
-  constructor(private manipulation: Manipulation) {}
+  constructor(
+    private manipulation: Manipulation,
+    /** True for an input that holds the units up off the table while it lasts: a drag. */
+    readonly lifts: boolean,
+  ) {}
 
   /** Replace this input's part of the change. Fields left out keep their value. */
   set(changes: Partial<Contribution>) {
@@ -93,9 +99,23 @@ export class Manipulation {
     return this.ids.has(id);
   }
 
-  /** Add an input. Its part of the change starts at nothing. */
-  join(): ManipulationInput {
-    const input = new ManipulationInput(this);
+  /**
+   * The units an input is holding up off the table, which is all of them while a drag is part
+   * of the manipulation, and none while only keys are turning or resizing them.
+   */
+  lifted(): ReadonlySet<number> {
+    for (const input of this.active) {
+      if (input.lifts) return this.ids;
+    }
+    return NOTHING;
+  }
+
+  /**
+   * Add an input. Its part of the change starts at nothing. `lifts` is for an input that
+   * holds the units up while it lasts, such as a drag.
+   */
+  join(lifts = false): ManipulationInput {
+    const input = new ManipulationInput(this, lifts);
     if (!this.over) {
       this.inputs.push(input);
       this.active.add(input);

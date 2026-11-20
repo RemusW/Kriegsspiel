@@ -28,6 +28,8 @@ import { ToolInput } from "./tools/ToolInput";
 const MAP_WIDTH = 100;
 /** Depth of the blank default map, framed until a map image has loaded. */
 const BLANK_MAP_DEPTH = 70;
+/** No units held up off the table. */
+const NOTHING_LIFTED: ReadonlySet<number> = new Set();
 /** Longest frame time the camera moves by, so a stalled or hidden tab does not cause a jump. */
 const MAX_FRAME_SECONDS = 0.1;
 
@@ -169,6 +171,8 @@ export class KSEngine {
     this.lastFrameTime = time;
     this.rig.update(dt);
     this.keys.update(dt);
+    // After the keys, so a held key's change this frame is what the blocks move towards.
+    this.pawns.update(dt, this.manipulation?.lifted() ?? NOTHING_LIFTED);
     this.renderer.render(this.scene, this.rig.camera);
   }
 
