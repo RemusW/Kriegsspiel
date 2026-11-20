@@ -6,7 +6,17 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+# The client is on another origin than the game server, so the HTTP routes need CORS headers.
+tower-http = { version = "0.6", features = ["cors"] }
 ts-rs = "12"
+# Save files are zips. Only deflate is wanted; the other codecs would be dead weight.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+# `oneshot`, to put a request through the router without binding a port.
+tower = { version = "0.5", features = ["util"] }

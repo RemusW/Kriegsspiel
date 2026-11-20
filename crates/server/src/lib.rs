@@ -1,7 +1,14 @@
 //! Game server: holds the game state and serves it to clients over WebSocket at `/ws`.
+//!
+//! Alongside the socket it serves the images a game uses from `/assets/{id}`, and whole save
+//! files from `/save` and `/load`. Those are plain HTTP because a 16 MB map image belongs in
+//! something the browser can cache and a save belongs in something it can download, neither
+//! of which a WebSocket does for us.
 
+pub mod assets;
 pub mod model;
 pub mod protocol;
+pub mod save;
 
 use std::{
     net::SocketAddr,
@@ -12,25 +19,37 @@ use std::{
 };
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{
-        State, WebSocketUpgrade,
+        DefaultBodyLimit, Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    response::Response,
-    routing::get,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
+use bytes::Bytes;
 use tokio::sync::{RwLock, watch};
+use tower_http::cors::{Any, CorsLayer};
 
+use assets::{Asset, AssetStore, is_asset_id};
 use model::{Doc, MAX_SCALE, MIN_SCALE, Side, Step, UmpireId, UnitKind};
 use protocol::{ClientMessage, Placement, ServerMessage, TurnInfo};
+use save::{MAX_SAVE_BYTES, SAVE_EXTENSION, SAVE_MIME, SaveError};
 
 pub const DEFAULT_PORT: u16 = 7878;
 
 /// One running game. Cheap to clone; all clones share the same state.
+///
+/// Two locks, always taken in the order they are declared here: the document first, then the
+/// images. Every path that needs both follows that order, which is what stops a save (which
+/// reads both) deadlocking against a load (which replaces both).
 #[derive(Clone)]
 pub struct Game {
     doc: Arc<RwLock<Doc>>,
+    /// The images the document names. Append-only while a game runs; replaced wholesale when
+    /// a save is loaded.
+    assets: Arc<RwLock<AssetStore>>,
     /// Wakes every connection after the document changes. It carries no data: each
     /// connection then reads the view its own client may see.
     changed: watch::Sender<()>,
@@ -39,11 +58,49 @@ pub struct Game {
 
 impl Game {
     pub fn new(doc: Doc) -> Self {
+        Self::with_assets(doc, AssetStore::default())
+    }
+
+    pub fn with_assets(doc: Doc, assets: AssetStore) -> Self {
         Self {
             doc: Arc::new(RwLock::new(doc)),
+            assets: Arc::new(RwLock::new(assets)),
             changed: watch::Sender::new(()),
             next_umpire: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Store one uploaded image and return it, or say why it was refused.
+    async fn add_asset(&self, bytes: Bytes) -> Result<(String, Asset), assets::AssetError> {
+        let mut assets = self.assets.write().await;
+        let id = assets.insert(bytes)?;
+        let asset = assets.get(&id).expect("just inserted").clone();
+        Ok((id, asset))
+    }
+
+    /// Write the whole game to a save file.
+    pub async fn save(&self) -> Result<Vec<u8>, SaveError> {
+        let doc = self.doc.read().await;
+        let assets = self.assets.read().await;
+        save::pack(&doc, &assets)
+    }
+
+    /// Replace the game with the contents of a save file, and tell every client. Nothing is
+    /// changed unless the whole file reads, so a damaged file leaves the game alone.
+    /// Every umpire's undo history goes with the document that held it.
+    pub async fn load(&self, bytes: &[u8]) -> Result<(usize, usize), SaveError> {
+        let (loaded, loaded_assets) = save::unpack(bytes)?;
+        let counts = (loaded.board.pawns.len(), loaded.turns.len());
+        {
+            let mut doc = self.doc.write().await;
+            let mut assets = self.assets.write().await;
+            *doc = loaded;
+            *assets = loaded_assets;
+        }
+        // Umpires viewing a turn are sent the live board: the turns they were stepping
+        // through belong to the game that was just replaced.
+        self.changed.send_replace(());
+        Ok(counts)
     }
 
     /// A game with four fixed units on the live board.
@@ -68,7 +125,12 @@ impl Game {
                 return Effect::Me;
             }
         };
-        let effect = apply(&mut *self.doc.write().await, umpire, message);
+        // The document first, then the images, as everywhere else: see `Game`.
+        let effect = {
+            let mut doc = self.doc.write().await;
+            let assets = self.assets.read().await;
+            apply(&mut doc, &assets, umpire, message)
+        };
         if effect == Effect::Everyone {
             // Unlike `send`, this does not fail when no connection is listening. It wakes this
             // connection too, which is how the sender gets its own board.
@@ -90,9 +152,14 @@ impl Game {
                 viewing: doc.viewing(umpire),
             }
         };
-        let text = serde_json::to_string(&snapshot).expect("boards always serialize");
-        socket.send(Message::Text(text.into())).await
+        send(socket, &snapshot).await
     }
+}
+
+/// Send one message to a client. Fails once the connection has closed.
+async fn send(socket: &mut WebSocket, message: &ServerMessage) -> Result<(), axum::Error> {
+    let text = serde_json::to_string(message).expect("server messages always serialize");
+    socket.send(Message::Text(text.into())).await
 }
 
 /// Who has to be sent a board after a command.
@@ -107,8 +174,14 @@ pub enum Effect {
     Everyone,
 }
 
-/// Apply one client message to the document. Returns who must be sent a board.
-fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
+/// Apply one client message to the document. Returns who must be sent a board. The images
+/// are read-only here: a command may only name one that has already been uploaded.
+fn apply(
+    doc: &mut Doc,
+    assets: &AssetStore,
+    umpire: UmpireId,
+    message: ClientMessage,
+) -> Effect {
     match message {
         ClientMessage::Spawn { kind, side, pos } => {
             // A number too large for f32, such as 1e39, arrives as infinity.
@@ -168,6 +241,49 @@ fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
             Effect::Me
         }
         ClientMessage::RestoreTurn => edited(doc.restore_viewed_turn(umpire)),
+        ClientMessage::SetMapImage { asset } => {
+            if !known_asset(assets, &asset) {
+                return Effect::Me;
+            }
+            edited(doc.edit(umpire, |board| board.map_image = asset))
+        }
+        ClientMessage::SetUnitImage { units, asset } => {
+            if !known_asset(assets, &asset) {
+                return Effect::Me;
+            }
+            // As with `Place`: with no unit left to change there is nothing to wake everyone
+            // for, but the sender is still answered.
+            let any_known = units
+                .iter()
+                .any(|id| doc.board.pawns.iter().any(|unit| unit.id == *id));
+            if !any_known {
+                return Effect::Me;
+            }
+            edited(doc.edit(umpire, |board| {
+                for id in &units {
+                    if let Some(unit) = board.unit_mut(*id) {
+                        unit.pawn.image = asset.clone();
+                    }
+                }
+            }))
+        }
+    }
+}
+
+/// Whether an image a command names can be used: either it is already in the store, or the
+/// command is clearing the image. A board that named an image the store does not hold would
+/// save to a file that could not be loaded back.
+///
+/// A refusal is logged because a snapshot cannot carry a reason: until commands have request
+/// ids and replies of their own, the server's own output is the only place this is visible.
+fn known_asset(assets: &AssetStore, asset: &Option<String>) -> bool {
+    match asset.as_deref() {
+        None => true,
+        Some(id) if assets.contains(id) => true,
+        Some(id) => {
+            eprintln!("refusing a command: no image {id} has been uploaded");
+            false
+        }
     }
 }
 
@@ -208,7 +324,90 @@ pub fn router(game: Game) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/ws", get(upgrade))
+        .route("/assets/{id}", get(asset))
+        .route("/save", get(download))
+        .route(
+            "/load",
+            // A save is far larger than axum's default body limit, which exists to stop one
+            // request eating the server's memory; this raises it for this one route.
+            post(upload).layer(DefaultBodyLimit::max(MAX_SAVE_BYTES)),
+        )
+        .layer(cors())
         .with_state(game)
+}
+
+/// Let a page on another origin read these routes.
+///
+/// The client is never on the same origin as the game server: `localhost:1420` in
+/// development, `tauri://localhost` in the packaged app, and the relay for a player. Without
+/// these headers the browser refuses to hand the page a response the server did answer,
+/// which is silent in a way that is easy to misread: three.js fetches a map image with
+/// `crossOrigin`, so the image goes unused, and a `POST` of a save never leaves the browser
+/// because the preflight `OPTIONS` is answered 405.
+///
+/// Any origin is allowed, which is no weaker than what is already true: CORS does not apply
+/// to the WebSocket, so any page can already open one and send commands. Keeping strangers
+/// out needs umpire identity, which is an open question, not CORS.
+fn cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+}
+
+/// Serve one image. The id is the hash of the bytes, so a URL can never come to mean a
+/// different image and the browser may keep it for good.
+async fn asset(Path(id): Path<String>, State(game): State<Game>) -> Response {
+    if !is_asset_id(&id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    // Cloned out of the store so the lock is released before the bytes are written to the
+    // socket; `Asset` holds its bytes behind a refcount, so this copies nothing.
+    let Some(asset) = game.assets.read().await.get(&id).cloned() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, asset.kind.mime()),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        asset.bytes,
+    )
+        .into_response()
+}
+
+/// The whole game as one save file, offered as a download.
+async fn download(State(game): State<Game>) -> Response {
+    match game.save().await {
+        Ok(file) => (
+            [
+                (header::CONTENT_TYPE, SAVE_MIME.to_owned()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"kriegsspiel.{SAVE_EXTENSION}\""),
+                ),
+            ],
+            file,
+        )
+            .into_response(),
+        Err(error) => {
+            // Saving reads state the server already holds, so a failure here is a bug in the
+            // writer rather than anything the umpire did.
+            eprintln!("could not write a save file: {error}");
+            (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+        }
+    }
+}
+
+/// Replace the game with an uploaded save file. The body is the file itself.
+async fn upload(State(game): State<Game>, body: Bytes) -> Response {
+    match game.load(&body).await {
+        Ok((pawns, turns)) => {
+            Json(serde_json::json!({ "pawns": pawns, "turns": turns })).into_response()
+        }
+        // The file came from whoever is at the keyboard, so the reason goes back to be shown.
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
 }
 
 pub async fn serve(addr: SocketAddr, game: Game) -> std::io::Result<()> {
@@ -217,7 +416,14 @@ pub async fn serve(addr: SocketAddr, game: Game) -> std::io::Result<()> {
 }
 
 async fn upgrade(ws: WebSocketUpgrade, State(game): State<Game>) -> Response {
-    ws.on_upgrade(|socket| client(socket, game))
+    // An uploaded image can arrive as one frame, so both limits have to clear the largest
+    // image the store would accept; the store itself does the refusing, with a reason. The
+    // frame limit defaults to 16 MiB, well under that, and overrunning it kills the
+    // connection instead of answering, so it has to be raised alongside the message limit.
+    let limit = assets::MAX_ASSET_BYTES + 1024;
+    ws.max_message_size(limit)
+        .max_frame_size(limit)
+        .on_upgrade(|socket| client(socket, game))
 }
 
 /// Serve one connected client until it disconnects: send its view whenever the document
@@ -241,8 +447,28 @@ async fn client(mut socket: WebSocket, game: Game) {
                         break;
                     }
                 }
+                // A binary frame is an image being uploaded: the only thing a client sends
+                // that is not JSON. The command that uses it follows as its own message, and
+                // a WebSocket keeps order, so the image is always in the store by the time
+                // that command is applied.
+                Some(Ok(Message::Binary(bytes))) => {
+                    let reply = match game.add_asset(bytes).await {
+                        Ok((id, asset)) => ServerMessage::AssetAdded {
+                            id,
+                            mime: asset.kind.mime().to_owned(),
+                            width: asset.width,
+                            height: asset.height,
+                        },
+                        Err(error) => ServerMessage::AssetRejected {
+                            reason: error.to_string(),
+                        },
+                    };
+                    if send(&mut socket, &reply).await.is_err() {
+                        break;
+                    }
+                }
                 Some(Ok(Message::Close(_)) | Err(_)) | None => break,
-                // Pings are answered by axum itself; binary messages are not used.
+                // Pings are answered by axum itself.
                 Some(Ok(_)) => {}
             },
             Ok(()) = changed.changed() => {
@@ -257,6 +483,13 @@ async fn client(mut socket: WebSocket, game: Game) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assets::test_png;
+
+    /// Apply a command to a game with no images in it. Commands that name an image call
+    /// `super::apply` with a store of their own.
+    fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
+        super::apply(doc, &AssetStore::default(), umpire, message)
+    }
 
     fn spawn_at(pos: [f32; 2]) -> ClientMessage {
         ClientMessage::Spawn {
@@ -618,6 +851,190 @@ mod tests {
             assert_eq!(doc.board.pawns[0].pawn.rot, 0.0);
             assert_eq!(doc.board.pawns[0].pawn.scale, 1.0);
         }
+    }
+
+    #[test]
+    fn setting_the_map_image_is_one_undoable_edit() {
+        let mut doc = two_units();
+        let mut store = AssetStore::default();
+        let map = store.insert(test_png(2048, 1024)).unwrap();
+
+        let set = |asset| ClientMessage::SetMapImage { asset };
+        let effect = super::apply(&mut doc, &store, 0, set(Some(map.clone())));
+        assert_eq!(effect, Effect::Everyone);
+        assert_eq!(doc.board.map_image, Some(map.clone()));
+
+        // Undo puts the table back as it was, like any other edit.
+        assert_eq!(doc.undo(0), model::Step::Applied);
+        assert_eq!(doc.board.map_image, None);
+        assert_eq!(doc.redo(0), model::Step::Applied);
+
+        // And it can be cleared.
+        assert_eq!(super::apply(&mut doc, &store, 0, set(None)), Effect::Everyone);
+        assert_eq!(doc.board.map_image, None);
+    }
+
+    #[test]
+    fn an_image_the_store_does_not_hold_is_refused() {
+        let mut doc = two_units();
+        let store = AssetStore::default();
+        let stranger = assets::asset_id(b"never uploaded");
+
+        let map = ClientMessage::SetMapImage {
+            asset: Some(stranger.clone()),
+        };
+        assert_eq!(super::apply(&mut doc, &store, 0, map), Effect::Me);
+        assert_eq!(doc.board.map_image, None, "the board names no missing image");
+
+        let unit = ClientMessage::SetUnitImage {
+            units: vec![0],
+            asset: Some(stranger),
+        };
+        assert_eq!(super::apply(&mut doc, &store, 0, unit), Effect::Me);
+        assert_eq!(doc.board.pawns[0].pawn.image, None);
+    }
+
+    #[test]
+    fn one_image_covers_the_whole_selection_in_one_step() {
+        let mut doc = two_units();
+        let mut store = AssetStore::default();
+        let badge = store.insert(test_png(64, 64)).unwrap();
+
+        let message = ClientMessage::SetUnitImage {
+            // An id that has left the board is skipped, as with a move.
+            units: vec![0, 1, 99],
+            asset: Some(badge.clone()),
+        };
+        assert_eq!(super::apply(&mut doc, &store, 0, message), Effect::Everyone);
+        assert_eq!(doc.board.pawns[0].pawn.image, Some(badge.clone()));
+        assert_eq!(doc.board.pawns[1].pawn.image, Some(badge));
+
+        assert_eq!(doc.undo(0), model::Step::Applied);
+        assert!(doc.board.pawns.iter().all(|u| u.pawn.image.is_none()));
+    }
+
+    #[test]
+    fn image_commands_parse_from_client_json() {
+        let parse = |json: &str| serde_json::from_str::<ClientMessage>(json).unwrap();
+        let id = "a".repeat(64);
+        assert_eq!(
+            parse(&format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#)),
+            ClientMessage::SetMapImage {
+                asset: Some(id.clone())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"setMapImage","asset":null}"#),
+            ClientMessage::SetMapImage { asset: None }
+        );
+        assert_eq!(
+            parse(&format!(
+                r#"{{"type":"setUnitImage","units":[1,2],"asset":"{id}"}}"#
+            )),
+            ClientMessage::SetUnitImage {
+                units: vec![1, 2],
+                asset: Some(id)
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_game_saves_and_loads_itself() {
+        let game = Game::new(Doc::default());
+        let (id, _) = game.add_asset(test_png(1024, 512)).await.unwrap();
+        game.receive(0, r#"{"type":"spawn","kind":"Cavalry","side":"Red","pos":[4,5]}"#)
+            .await;
+        game.receive(0, &format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#))
+            .await;
+        game.receive(0, r#"{"type":"recordTurn"}"#).await;
+
+        let file = game.save().await.unwrap();
+
+        // Into a different game, to show the file carries everything and needs nothing of
+        // the server that wrote it.
+        let other = Game::new(Doc::default());
+        assert_eq!(other.load(&file).await.unwrap(), (1, 1));
+        let doc = other.doc.read().await;
+        assert_eq!(doc.board.map_image, Some(id.clone()));
+        assert_eq!(doc.board.pawns[0].pawn.pos, [4.0, 5.0]);
+        assert_eq!(doc.turns.len(), 1);
+        // The image came with it, so the new game can serve it to its own clients.
+        assert!(other.assets.read().await.contains(&id));
+    }
+
+    #[tokio::test]
+    async fn a_damaged_save_leaves_the_game_alone() {
+        let game = Game::demo();
+        let before = game.doc.read().await.board.pawns.len();
+
+        let error = game.load(b"not a save file").await.unwrap_err();
+        assert!(matches!(error, SaveError::Archive(_)), "{error}");
+        assert_eq!(game.doc.read().await.board.pawns.len(), before);
+    }
+
+    #[tokio::test]
+    async fn the_http_routes_may_be_read_from_the_client_s_origin() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let game = Game::new(Doc::default());
+        let (id, _) = game.add_asset(test_png(8, 8)).await.unwrap();
+        let app = router(game);
+
+        let from_the_page = |method: &str, uri: String| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("origin", "http://localhost:1420")
+                .header("access-control-request-method", "POST")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // What the browser asks before it will POST a save file. Answered 405 before the
+        // headers were added, which aborts the upload without it ever being sent.
+        let preflight = app
+            .clone()
+            .oneshot(from_the_page("OPTIONS", "/load".into()))
+            .await
+            .unwrap();
+        assert!(preflight.status().is_success(), "{}", preflight.status());
+        assert_eq!(preflight.headers()["access-control-allow-origin"], "*");
+
+        // And a map image, which three.js fetches with `crossOrigin` and cannot use without
+        // the same header, however well the request itself went.
+        let image = app
+            .oneshot(from_the_page("GET", format!("/assets/{id}")))
+            .await
+            .unwrap();
+        assert_eq!(image.status(), StatusCode::OK);
+        assert_eq!(image.headers()["access-control-allow-origin"], "*");
+    }
+
+    #[tokio::test]
+    async fn an_upload_is_not_an_edit() {
+        let game = Game::new(Doc::default());
+        let changed = game.changed.subscribe();
+
+        let (id, _) = game.add_asset(test_png(8, 8)).await.unwrap();
+        // Storing an image changes no board, so no client is sent one: a 16 MB map arriving
+        // must not make every player redraw. The command that uses it is what they hear.
+        assert!(!changed.has_changed().unwrap());
+
+        game.receive(0, &format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#))
+            .await;
+        assert!(changed.has_changed().unwrap(), "laying it down is an edit");
+    }
+
+    #[tokio::test]
+    async fn an_upload_that_is_not_an_image_is_refused() {
+        let game = Game::new(Doc::default());
+        let error = game
+            .add_asset(Bytes::from_static(b"<svg/>"))
+            .await
+            .unwrap_err();
+        assert_eq!(error, assets::AssetError::Unsupported);
+        assert!(game.assets.read().await.is_empty());
     }
 
     #[test]

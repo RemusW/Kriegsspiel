@@ -1,0 +1,6 @@
+# LF in the index and in the working tree, on every platform.
+#
+# Without this, Git on Windows checks out CRLF (core.autocrlf) while Prettier writes LF, so
+# every formatting run marks files as modified although their content is unchanged. Binary
+# files are detected by `text=auto` and left alone.
+* text=auto eol=lf

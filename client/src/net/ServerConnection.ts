@@ -1,20 +1,12 @@
 import { EMPTY_BOARD } from "../model";
-import {
-  DEFAULT_PORT,
-  type ClientMessage,
-  type ServerMessage,
-} from "../protocol";
+import type { ClientMessage, ServerMessage } from "../protocol";
 import { clientStore, type ClientStore, type View } from "../state/store";
+import { socketEndpoint } from "./endpoint";
 
 const RETRY_MS = 1500;
 
 /** What is shown while no server has sent anything: an empty table and no history. */
 const BLANK_VIEW: View = { board: EMPTY_BOARD, turns: [], viewing: null };
-
-function serverUrl(): string {
-  const host = window.location.hostname || "localhost";
-  return `ws://${host}:${DEFAULT_PORT}/ws`;
-}
 
 /**
  * The WebSocket to the game server. Writes the boards the server sends into the store, and
@@ -50,18 +42,39 @@ export class ServerConnection {
     return true;
   }
 
+  /**
+   * Send raw bytes: an image for the server's store, which is the only thing that does not
+   * travel as a command. A socket keeps order, so a command naming this image may be sent
+   * immediately after without waiting for the server to confirm it.
+   */
+  sendBytes(bytes: ArrayBuffer): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(bytes);
+    return true;
+  }
+
   private open() {
     const { showView, setConnection } = this.store.getState();
     setConnection("connecting");
 
-    const socket = new WebSocket(serverUrl());
+    const socket = new WebSocket(socketEndpoint());
     this.socket = socket;
     socket.onopen = () => setConnection("connected");
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data as string) as ServerMessage;
-      if (message.type === "snapshot") {
-        const { board, turns, viewing } = message;
-        showView({ board, turns, viewing });
+      switch (message.type) {
+        case "snapshot": {
+          const { board, turns, viewing } = message;
+          showView({ board, turns, viewing });
+          break;
+        }
+        case "assetAdded":
+          // The client already worked out this id by hashing the file, so there is nothing
+          // to do but check the two agree.
+          break;
+        case "assetRejected":
+          this.store.getState().setNotice(message.reason);
+          break;
       }
     };
     socket.onclose = () => {

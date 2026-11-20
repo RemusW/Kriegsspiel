@@ -53,6 +53,11 @@ export interface ClientState {
    */
   viewing: number | null;
   connection: Connection;
+  /**
+   * Something to tell the umpire that no board can show: an image the server would not
+   * take, or a save file that would not load. Cleared when it has been read.
+   */
+  notice: string | null;
   /** Which keys mean what. Nothing changes this yet; a settings menu will. */
   bindings: Bindings;
 
@@ -64,6 +69,7 @@ export interface ClientState {
   /** Show what the server's latest snapshot carried. */
   showView: (view: View) => void;
   setConnection: (connection: Connection) => void;
+  setNotice: (notice: string | null) => void;
   setBindings: (bindings: Bindings) => void;
 }
 
@@ -76,6 +82,7 @@ export const clientStore = createStore<ClientState>()((set) => ({
   turns: [],
   viewing: null,
   connection: "connecting",
+  notice: null,
   bindings: DEFAULT_BINDINGS,
 
   setTool: (tool) => set({ tool }),
@@ -104,9 +111,15 @@ export const clientStore = createStore<ClientState>()((set) => ({
         kept.length === state.selection.length ? state.selection : kept;
       // The same for the turn list, which comes with every board but rarely changes: the
       // timeline then re-renders when the history does, not on every edit anyone makes.
-      return { board, viewing, selection, turns: sameTurns(state.turns, turns) };
+      return {
+        board,
+        viewing,
+        selection,
+        turns: sameTurns(state.turns, turns),
+      };
     }),
   setConnection: (connection) => set({ connection }),
+  setNotice: (notice) => set({ notice }),
   setBindings: (bindings) => set({ bindings }),
 }));
 

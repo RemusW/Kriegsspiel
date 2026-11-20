@@ -97,6 +97,15 @@ impl Board {
     pub fn unit_mut(&mut self, id: u64) -> Option<&mut Unit> {
         self.pawns.iter_mut().find(|unit| unit.id == id)
     }
+
+    /// Every asset id this board names: its map image, and any unit's top-face image. What a
+    /// save file has to carry, and what may not be thrown away while this board exists.
+    pub fn images(&self) -> impl Iterator<Item = &str> {
+        self.map_image
+            .as_deref()
+            .into_iter()
+            .chain(self.pawns.iter().filter_map(|unit| unit.pawn.image.as_deref()))
+    }
 }
 
 /// One recorded turn: the board as it stood, and when an umpire recorded it.
@@ -124,7 +133,7 @@ pub enum Step {
 }
 
 /// The live board, the recorded turns, and each umpire's history and view.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Doc {
     /// The live board. Change it through [`Doc::edit`] so the change can be undone.
     pub board: Board,
@@ -133,7 +142,7 @@ pub struct Doc {
 }
 
 /// What the document keeps for one umpire.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Umpire {
     undo: Vec<Edit>,
     redo: Vec<Edit>,

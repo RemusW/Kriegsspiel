@@ -1,14 +1,4 @@
-import {
-  DirectionalLight,
-  Mesh,
-  MeshStandardMaterial,
-  PlaneGeometry,
-  Scene,
-  SRGBColorSpace,
-  TextureLoader,
-  WebGPURenderer,
-} from "three/webgpu";
-import farleyUrl from "../../assets/farley.png";
+import { DirectionalLight, Scene, WebGPURenderer } from "three/webgpu";
 import type { Unit } from "../model";
 import type { ServerConnection } from "../net/ServerConnection";
 import type { ClientStore } from "../state/store";
@@ -18,16 +8,13 @@ import { KeyInput } from "./input/KeyInput";
 import { Keymap } from "./input/Keymap";
 import { Manipulation } from "./Manipulation";
 import { OVERLAY_LAYER } from "./layers";
+import { BLANK_MAP_DEPTH, MAP_WIDTH, MapPlane } from "./map/MapPlane";
 import { PawnLayer } from "./pawns/PawnLayer";
 import { PendingEdits } from "./PendingEdits";
 import { Picker } from "./picking/Picker";
 import { MarqueeBox } from "./tools/MarqueeBox";
 import { ToolInput } from "./tools/ToolInput";
 
-/** Width of the map plane in world units. Its depth follows the image's aspect ratio. */
-const MAP_WIDTH = 100;
-/** Depth of the blank default map, framed until a map image has loaded. */
-const BLANK_MAP_DEPTH = 70;
 /** Longest frame time the camera moves by, so a stalled or hidden tab does not cause a jump. */
 const MAX_FRAME_SECONDS = 0.1;
 
@@ -36,6 +23,7 @@ export class KSEngine {
   private renderer: WebGPURenderer;
   private rig: CameraRig;
   private scene: Scene;
+  private map: MapPlane;
   private pawns: PawnLayer;
   private picker: Picker;
   private keymap: Keymap;
@@ -56,6 +44,8 @@ export class KSEngine {
   private resizeObserver: ResizeObserver;
   private unsubscribe: () => void;
   private disposed = false;
+  /** Whether the camera has been put on the table since a map image arrived. */
+  private framedMap = false;
   private lastFrameTime: number | null = null;
 
   constructor(
@@ -79,6 +69,15 @@ export class KSEngine {
     this.rig.frameMap(MAP_WIDTH, BLANK_MAP_DEPTH);
 
     this.scene = new Scene();
+    // Anisotropy is read when a texture loads, since the renderer can only answer for it
+    // once it has initialised.
+    this.map = new MapPlane(() => this.renderer.getMaxAnisotropy());
+    this.scene.add(this.map.object);
+
+    const sun = new DirectionalLight(0xffffff, 3);
+    sun.position.set(-40, 80, 60);
+    this.scene.add(sun);
+
     this.pawns = new PawnLayer();
     this.scene.add(this.pawns.group);
     this.marquee = new MarqueeBox();
@@ -118,6 +117,9 @@ export class KSEngine {
         this.pending.settle();
         this.refresh();
       }
+      if (state.board.mapImage !== previous.board.mapImage) {
+        void this.showMap(state.board.mapImage);
+      }
       if (
         state.board !== previous.board ||
         state.selection !== previous.selection
@@ -134,7 +136,7 @@ export class KSEngine {
   async init() {
     await this.renderer.init();
     if (this.disposed) return;
-    await this.exampleScene();
+    await this.showMap(this.store.getState().board.mapImage);
   }
 
   dispose() {
@@ -144,6 +146,7 @@ export class KSEngine {
     this.tools.dispose();
     this.keys.dispose();
     this.rig.dispose();
+    this.map.dispose();
     this.pawns.dispose();
     this.marquee.dispose();
     this.resizeObserver.disconnect();
@@ -210,35 +213,27 @@ export class KSEngine {
     this.pawns.sync(this.shown);
   }
 
-  /** The Farley map on a subdivided plane, lit by one directional light and seen from above at an angle. */
-  async exampleScene() {
-    const texture = await new TextureLoader().loadAsync(farleyUrl);
-    // The engine may have been disposed while the image loaded.
-    if (this.disposed) {
-      texture.dispose();
-      return;
+  /**
+   * Put the board's map image on the table. The camera is framed on it the first time a map
+   * arrives; later changes leave the camera where the umpire put it.
+   */
+  private async showMap(id: string | null) {
+    try {
+      const depth = await this.map.show(id);
+      if (this.disposed) return;
+      if (id !== null && !this.framedMap) {
+        this.framedMap = true;
+        this.rig.frameMap(MAP_WIDTH, depth);
+      }
+    } catch (error) {
+      // An image that will not load leaves the table blank, which looks exactly like a
+      // command that never arrived, so it has to say so itself.
+      if (this.disposed) return;
+      this.store
+        .getState()
+        .setNotice(
+          `Map image ${id} could not be loaded: ${error instanceof Error ? error.message : error}`,
+        );
     }
-    texture.colorSpace = SRGBColorSpace;
-    texture.anisotropy = this.renderer.getMaxAnisotropy();
-
-    const depth = MAP_WIDTH * (texture.image.height / texture.image.width);
-
-    // One quad per world unit. Rotated onto the XZ plane facing up, which puts the top of
-    // the image (north) towards -Z.
-    const geometry = new PlaneGeometry(
-      MAP_WIDTH,
-      depth,
-      MAP_WIDTH,
-      Math.round(depth),
-    );
-    geometry.rotateX(-Math.PI / 2);
-    const material = new MeshStandardMaterial({ map: texture, roughness: 1 });
-    this.scene.add(new Mesh(geometry, material));
-
-    const sun = new DirectionalLight(0xffffff, 3);
-    sun.position.set(-40, 80, 60);
-    this.scene.add(sun);
-
-    this.rig.frameMap(MAP_WIDTH, depth);
   }
 }
