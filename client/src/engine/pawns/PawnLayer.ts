@@ -61,8 +61,11 @@ export class PawnLayer {
     );
   }
 
-  /** Add, update and remove meshes so they match these units. */
-  sync(units: Unit[]) {
+  /**
+   * Add, update and remove meshes so they match these units. The engine calls this with the
+   * units as drawn, so a drag in progress arrives here as ordinary positions.
+   */
+  sync(units: readonly Unit[]) {
     const present = new Set<number>();
     for (const unit of units) {
       present.add(unit.id);

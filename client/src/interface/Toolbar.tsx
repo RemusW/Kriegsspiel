@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
+import { TOOLS, type ToolId } from "../engine/tools/Tool";
 import { useClientStore } from "../state/store";
 import styles from "./Toolbar.module.css";
+
+/** Each tool's tooltip, kept with the tool itself so its behaviour and label stay together. */
+const LABEL = Object.fromEntries(
+  TOOLS.map((tool) => [tool.id, tool.label]),
+) as Record<ToolId, string>;
 
 export function Toolbar() {
   const tool = useClientStore((s) => s.tool);
@@ -18,14 +24,14 @@ export function Toolbar() {
       aria-orientation="vertical"
     >
       <ToolButton
-        label="Select: click a unit, Shift-click to add or remove one"
+        label={LABEL.select}
         active={tool === "select"}
         onClick={() => setTool("select")}
       >
         <SelectIcon />
       </ToolButton>
       <ToolButton
-        label="Marquee: drag a box to select units, Shift to add them"
+        label={LABEL.marquee}
         active={tool === "marquee"}
         onClick={() => setTool("marquee")}
       >
@@ -52,7 +58,7 @@ export function Toolbar() {
         </div>
       )}
       <ToolButton
-        label="Spawn: click the map to place an infantry unit"
+        label={LABEL.spawn}
         active={tool === "spawn"}
         onClick={() => setTool("spawn")}
       >

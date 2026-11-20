@@ -27,7 +27,7 @@ const GROUND = new Plane(new Vector3(0, 1, 0), 0);
  *   under it.
  * - Dragging with the middle button held tilts the camera.
  * - The mouse wheel zooms towards the cursor.
- * - W/A/S/D pan. Shift pans faster.
+ * - W/A/S/D pan. The `fast` modifier pans faster.
  */
 export class MapController implements CameraController {
   private controls: MapControls;
@@ -107,7 +107,9 @@ export class MapController implements CameraController {
 
     const distance = this.camera.position.distanceTo(this.controls.target);
     const speed =
-      distance * PAN_SPEED_PER_DISTANCE * (keys.shift ? FAST_MULTIPLIER : 1);
+      distance *
+      PAN_SPEED_PER_DISTANCE *
+      (keys.holds("fast") ? FAST_MULTIPLIER : 1);
     move.multiplyScalar(speed * dt);
     this.camera.position.add(move);
     this.controls.target.add(move);

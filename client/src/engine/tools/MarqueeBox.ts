@@ -16,7 +16,7 @@ import {
   vec4,
 } from "three/tsl";
 import { OVERLAY_LAYER } from "../layers";
-import type { ScreenBox } from "./ToolInput";
+import type { ScreenBox } from "../coords";
 
 const COLOR = 0xffd400;
 const FILL_OPACITY = 0.1;

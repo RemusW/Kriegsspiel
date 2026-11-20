@@ -2,24 +2,23 @@ import {
   DirectionalLight,
   Mesh,
   MeshStandardMaterial,
-  Plane,
   PlaneGeometry,
-  Raycaster,
-  type Ray,
   Scene,
   SRGBColorSpace,
   TextureLoader,
-  Vector2,
-  Vector3,
   WebGPURenderer,
 } from "three/webgpu";
 import farleyUrl from "../../assets/farley.png";
+import type { Unit } from "../model";
 import type { ServerConnection } from "../net/ServerConnection";
 import type { ClientStore } from "../state/store";
 import { CameraRig } from "./camera/CameraRig";
+import type { EditorContext } from "./EditorContext";
+import { Keymap } from "./input/Keymap";
 import { OVERLAY_LAYER } from "./layers";
-import { hitTestUnits, unitsInScreenBox } from "./pawns/hitTest";
 import { PawnLayer } from "./pawns/PawnLayer";
+import { PendingEdits } from "./PendingEdits";
+import { Picker } from "./picking/Picker";
 import { MarqueeBox } from "./tools/MarqueeBox";
 import { ToolInput } from "./tools/ToolInput";
 
@@ -30,20 +29,21 @@ const BLANK_MAP_DEPTH = 70;
 /** Longest frame time the camera moves by, so a stalled or hidden tab does not cause a jump. */
 const MAX_FRAME_SECONDS = 0.1;
 
-const GROUND = new Plane(new Vector3(0, 1, 0), 0);
-
 export class KSEngine {
   private store: ClientStore;
   private renderer: WebGPURenderer;
   private rig: CameraRig;
   private scene: Scene;
   private pawns: PawnLayer;
+  private picker: Picker;
+  private keymap: Keymap;
   private tools: ToolInput;
   private marquee: MarqueeBox;
 
-  private raycaster = new Raycaster();
-  private pointer = new Vector2();
-  private hit = new Vector3();
+  /** Edits asked of the server and not yet seen in a board. */
+  private pending = new PendingEdits();
+  /** The units as drawn: the board with `pending` applied. Everything picks against these. */
+  private shown: readonly Unit[] = [];
 
   private resizeObserver: ResizeObserver;
   private unsubscribe: () => void;
@@ -64,42 +64,55 @@ export class KSEngine {
     });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setAnimationLoop((time) => this.render(time));
-    this.rig = new CameraRig(canvas, store.getState().cameraMode);
+    // The one place keys are turned into what they mean, for the tools and the camera alike.
+    this.keymap = new Keymap(store.getState().bindings);
+    this.rig = new CameraRig(canvas, store.getState().cameraMode, this.keymap);
     this.rig.camera.layers.enable(OVERLAY_LAYER);
     this.rig.frameMap(MAP_WIDTH, BLANK_MAP_DEPTH);
 
     this.scene = new Scene();
     this.pawns = new PawnLayer();
-    this.pawns.sync(store.getState().board.pawns);
-    this.pawns.showSelection(store.getState().selection);
     this.scene.add(this.pawns.group);
     this.marquee = new MarqueeBox();
     this.scene.add(this.marquee.mesh);
+    this.picker = new Picker(canvas, this.rig, () => this.shown);
+    this.refresh();
+    this.pawns.showSelection(store.getState().selection);
 
-    this.tools = new ToolInput(canvas, store, {
-      pickTable: (event) => this.pickTable(event),
-      pickUnit: (event) => this.pickUnit(event),
-      pickUnitsInBox: (box) =>
-        unitsInScreenBox(
-          store.getState().board.pawns,
-          this.rig.camera,
-          canvas.getBoundingClientRect(),
-          box,
-        ),
+    const context: EditorContext = {
+      pick: this.picker,
+      units: () => this.shown,
+      selection: () => store.getState().selection,
+      select: (ids, mode) => store.getState().select(ids, mode),
+      preview: (edits) => {
+        this.pending.hold(edits);
+        this.refresh();
+      },
+      releasePreview: () => this.pending.release(),
+      discardPreview: () => {
+        this.pending.discard();
+        this.refresh();
+      },
       showMarquee: (box) =>
         box
           ? this.marquee.show(box, canvas.getBoundingClientRect())
           : this.marquee.hide(),
-      select: (ids, mode) => store.getState().select(ids, mode),
       send: (message) => connection.send(message),
-    });
+    };
+    this.tools = new ToolInput(canvas, store, this.keymap, context);
 
     this.unsubscribe = store.subscribe((state, previous) => {
       if (state.cameraMode !== previous.cameraMode) {
         this.rig.setMode(state.cameraMode);
       }
+      if (state.bindings !== previous.bindings) {
+        // Nothing caches a binding, so the next event already uses these.
+        this.keymap.bindings = state.bindings;
+      }
       if (state.board !== previous.board) {
-        this.pawns.sync(state.board.pawns);
+        // This board answers every pending edit no gesture is still holding.
+        this.pending.settle();
+        this.refresh();
       }
       if (
         state.board !== previous.board ||
@@ -154,35 +167,12 @@ export class KSEngine {
   }
 
   /**
-   * The point on the table under the pointer as [world X, world Z], on or off the map. Null
-   * when the pointer is above the horizon or the point is beyond the camera's far plane.
+   * Work out the units as drawn and draw them. Called when a board arrives and whenever a
+   * pending edit changes, which during a drag is every move of the pointer.
    */
-  private pickTable(event: PointerEvent): [number, number] | null {
-    const ray = this.rayThrough(event);
-    // The table is flat at y = 0, so the ray's hit on that plane is the exact point.
-    const hit = ray.intersectPlane(GROUND, this.hit);
-    // A piece beyond the far plane would be clipped, so it could not be seen once placed.
-    if (!hit || hit.distanceTo(ray.origin) > this.rig.camera.far) return null;
-    return [hit.x, hit.z];
-  }
-
-  /** The unit whose top face is under the pointer, or null. */
-  private pickUnit(event: PointerEvent): number | null {
-    return hitTestUnits(
-      this.rayThrough(event),
-      this.store.getState().board.pawns,
-    );
-  }
-
-  /** The camera ray through the pointer's position on the canvas. */
-  private rayThrough(event: PointerEvent): Ray {
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    this.pointer.set(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      1 - ((event.clientY - rect.top) / rect.height) * 2,
-    );
-    this.raycaster.setFromCamera(this.pointer, this.rig.camera);
-    return this.raycaster.ray;
+  private refresh() {
+    this.shown = this.pending.applyTo(this.store.getState().board.pawns);
+    this.pawns.sync(this.shown);
   }
 
   /** The Farley map on a subdivided plane, lit by one directional light and seen from above at an angle. */

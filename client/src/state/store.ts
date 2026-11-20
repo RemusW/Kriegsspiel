@@ -1,8 +1,8 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { DEFAULT_BINDINGS, type Bindings } from "../engine/input/Keymap";
+import type { ToolId } from "../engine/tools/Tool";
 import { EMPTY_BOARD, type Board } from "../model";
-
-export type Tool = "select" | "marquee" | "spawn";
 export type MarqueeShape = "box" | "lasso";
 export type Connection = "connecting" | "connected" | "disconnected";
 export type CameraMode = "fly" | "map";
@@ -14,7 +14,7 @@ export type SelectMode = "replace" | "add" | "toggle";
  * `useClientStore`; the engine uses `getState` and `subscribe` on the store it is given.
  */
 export interface ClientState {
-  tool: Tool;
+  tool: ToolId;
   marqueeShape: MarqueeShape;
   cameraMode: CameraMode;
   /** Ids of the selected units. Only ids present in `board`. */
@@ -22,14 +22,17 @@ export interface ClientState {
   /** The latest board the server sent. */
   board: Board;
   connection: Connection;
+  /** Which keys mean what. Nothing changes this yet; a settings menu will. */
+  bindings: Bindings;
 
-  setTool: (tool: Tool) => void;
+  setTool: (tool: ToolId) => void;
   setMarqueeShape: (shape: MarqueeShape) => void;
   setCameraMode: (mode: CameraMode) => void;
   /** Change the selection. Ids that are not on the board are ignored. */
   select: (ids: number[], mode: SelectMode) => void;
   setBoard: (board: Board) => void;
   setConnection: (connection: Connection) => void;
+  setBindings: (bindings: Bindings) => void;
 }
 
 export const clientStore = createStore<ClientState>()((set) => ({
@@ -39,6 +42,7 @@ export const clientStore = createStore<ClientState>()((set) => ({
   selection: [],
   board: EMPTY_BOARD,
   connection: "connecting",
+  bindings: DEFAULT_BINDINGS,
 
   setTool: (tool) => set({ tool }),
   setMarqueeShape: (marqueeShape) => set({ marqueeShape }),
@@ -67,6 +71,7 @@ export const clientStore = createStore<ClientState>()((set) => ({
       return { board, selection };
     }),
   setConnection: (connection) => set({ connection }),
+  setBindings: (bindings) => set({ bindings }),
 }));
 
 export type ClientStore = typeof clientStore;

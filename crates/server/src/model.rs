@@ -88,6 +88,11 @@ impl Board {
         });
         id
     }
+
+    /// The unit with this id, if it is on the board.
+    pub fn unit_mut(&mut self, id: u64) -> Option<&mut Unit> {
+        self.pawns.iter_mut().find(|unit| unit.id == id)
+    }
 }
 
 /// The outcome of an undo or redo.

@@ -1,3 +1,11 @@
+import type { Keymap } from "../input/Keymap";
+import {
+  chordsOf,
+  NO_CHORDS,
+  type ChordState,
+  type Modifier,
+} from "../input/Modifier";
+
 /** Physical key codes, so the same key positions work on every keyboard layout. */
 export const MOVE_KEYS = {
   forward: "KeyW",
@@ -8,7 +16,7 @@ export const MOVE_KEYS = {
   down: "KeyF",
 } as const;
 
-/** Speed multiplier while Shift is held. */
+/** Speed multiplier while the `fast` modifier is held. */
 export const FAST_MULTIPLIER = 3;
 
 /**
@@ -18,8 +26,11 @@ export const FAST_MULTIPLIER = 3;
  */
 export class KeyState {
   private pressed = new Set<string>();
+  /** The modifier keys held, as of the last key event the window saw. */
+  private chords: ChordState = NO_CHORDS;
 
-  constructor() {
+  /** `keymap` says which keys a modifier stands for, so this class never decides. */
+  constructor(private keymap: Keymap) {
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("blur", this.onBlur);
@@ -33,8 +44,9 @@ export class KeyState {
     );
   }
 
-  get shift(): boolean {
-    return this.pressed.has("ShiftLeft") || this.pressed.has("ShiftRight");
+  /** True while the keys bound to this modifier are held. */
+  holds(modifier: Modifier): boolean {
+    return this.keymap.holds(modifier, this.chords);
   }
 
   dispose() {
@@ -44,6 +56,9 @@ export class KeyState {
   }
 
   private onKeyDown = (event: KeyboardEvent) => {
+    // Before the filters below, which drop the movement keys but not the modifiers: a
+    // modifier's own keydown carries its flag, so Ctrl would otherwise never be seen.
+    this.chords = chordsOf(event);
     // macOS sends no keyup for keys released while Cmd is held, so forget everything on Cmd.
     if (event.key === "Meta") {
       this.pressed.clear();
@@ -55,11 +70,13 @@ export class KeyState {
   };
 
   private onKeyUp = (event: KeyboardEvent) => {
+    this.chords = chordsOf(event);
     this.pressed.delete(event.code);
   };
 
   private onBlur = () => {
     this.pressed.clear();
+    this.chords = NO_CHORDS;
   };
 }
 

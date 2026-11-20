@@ -19,7 +19,7 @@ const UP = new Vector3(0, 1, 0);
  * First-person flying, like Tabletop Simulator's camera.
  *
  * - W/A/S/D move horizontally, relative to the direction the camera faces.
- * - R/F move up and down. Shift moves faster.
+ * - R/F move up and down. The `fast` modifier moves faster.
  * - Dragging with the right mouse button held turns the camera.
  * - The mouse wheel moves along the view direction.
  *
@@ -66,7 +66,7 @@ export class FlyController implements CameraController {
 
     const speed =
       Math.max(MIN_SPEED, this.camera.position.y * SPEED_PER_HEIGHT) *
-      (keys.shift ? FAST_MULTIPLIER : 1);
+      (keys.holds("fast") ? FAST_MULTIPLIER : 1);
     this.camera.position.addScaledVector(move, speed * dt);
     this.clampHeight();
   }

@@ -1,6 +1,6 @@
 import { type Camera, Plane, type Ray, Vector3 } from "three/webgpu";
 import type { Unit } from "../../model";
-import type { ScreenBox } from "../tools/ToolInput";
+import type { ScreenBox } from "../coords";
 import { BLOCK_DEPTH, BLOCK_THICKNESS, BLOCK_WIDTH } from "./PawnLayer";
 
 /** Every block's top face lies in this plane, since scale leaves thickness unchanged. */
@@ -12,7 +12,7 @@ const projected = new Vector3();
  * The id of the unit whose top face the ray hits, or null. Where blocks overlap, the one
  * whose centre is nearest the hit wins.
  */
-export function hitTestUnits(ray: Ray, units: Unit[]): number | null {
+export function hitTestUnits(ray: Ray, units: readonly Unit[]): number | null {
   if (!ray.intersectPlane(TOP_FACES, hit)) return null;
 
   let nearest: number | null = null;
@@ -45,7 +45,7 @@ export function hitTestUnits(ray: Ray, units: Unit[]): number | null {
  * canvas's rectangle in the same client coordinates as `box`.
  */
 export function unitsInScreenBox(
-  units: Unit[],
+  units: readonly Unit[],
   camera: Camera,
   canvas: DOMRect,
   box: ScreenBox,

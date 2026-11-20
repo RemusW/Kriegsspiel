@@ -1,5 +1,6 @@
 import { MathUtils, PerspectiveCamera } from "three/webgpu";
 import type { CameraMode } from "../../state/store";
+import type { Keymap } from "../input/Keymap";
 import { FlyController } from "./FlyController";
 import { KeyState } from "./KeyState";
 import { MapController } from "./MapController";
@@ -30,7 +31,7 @@ export class CameraRig {
   /** The three.js camera to render with. */
   readonly camera = new PerspectiveCamera(FOV, 1, NEAR, FAR);
 
-  private keys = new KeyState();
+  private keys: KeyState;
   private mode: CameraMode;
   private controller: CameraController;
   private isEnabled = true;
@@ -39,7 +40,9 @@ export class CameraRig {
   constructor(
     private element: HTMLElement,
     mode: CameraMode,
+    keymap: Keymap,
   ) {
+    this.keys = new KeyState(keymap);
     this.mode = mode;
     this.controller = this.createController(mode);
   }

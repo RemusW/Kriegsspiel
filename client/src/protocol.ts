@@ -2,7 +2,7 @@
 // `crates/server/src/protocol.rs` into `bindings/protocol.ts` by
 // `cargo test -p kriegsspiel-server`.
 
-export type { ClientMessage, ServerMessage } from "./bindings/protocol";
+export type { ClientMessage, ServerMessage, UnitMove } from "./bindings/protocol";
 
 /** Matches `DEFAULT_PORT` in `crates/server/src/lib.rs`. */
 export const DEFAULT_PORT = 7878;
