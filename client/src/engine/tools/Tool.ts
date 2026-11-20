@@ -1,9 +1,23 @@
 import type { EditorContext } from "../EditorContext";
-import type { PressPoint } from "../coords";
+import type { PressPoint, TablePoint } from "../coords";
 import type { Gesture } from "./Gesture";
 import { marqueeTool } from "./marquee";
 import { selectTool } from "./select";
 import { spawnTool } from "./spawn";
+
+/**
+ * A press that became a drag, with what was under the pointer when the button went down.
+ * A drag begins only once the pointer has moved past the click threshold, and by then the
+ * scene may have changed under the press point: a held key may be turning the units, or the
+ * camera moving. A tool begins its drag from this rather than picking again, so it acts on
+ * what the umpire pressed on.
+ */
+export interface PressHit extends PressPoint {
+  /** The unit under the press, or null. */
+  unit: number | null;
+  /** The point on the table under the press, or null above the horizon. */
+  table: TablePoint | null;
+}
 
 /** One way of editing the board with the left mouse button. */
 export interface Tool {
@@ -13,7 +27,7 @@ export interface Tool {
   /** A press and release without moving in between. */
   click(context: EditorContext, press: PressPoint): void;
   /** Start a drag, or return null to leave the press to the tool's other gestures. */
-  begin?(context: EditorContext, press: PressPoint): Gesture | null;
+  begin?(context: EditorContext, press: PressHit): Gesture | null;
 }
 
 /** Every tool, in toolbar order. Adding one here is all it takes to offer it. */

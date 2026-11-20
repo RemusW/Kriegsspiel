@@ -2,7 +2,7 @@ import type { Unit } from "../model";
 import type { ClientMessage } from "../protocol";
 import type { SelectMode } from "../state/store";
 import type { ScreenBox } from "./coords";
-import type { PendingPawn } from "./PendingEdits";
+import type { Manipulation } from "./Manipulation";
 import type { PickSource } from "./picking/Picker";
 
 /** What the engine gives its editing tools. */
@@ -18,12 +18,13 @@ export interface EditorContext {
   selection(): readonly number[];
   /** Change the selection. Ids that are not on the board are ignored. */
   select(ids: number[], mode: SelectMode): void;
-  /** Draw these units' fields as already changed, for a gesture that is still running. */
-  preview(edits: Map<number, PendingPawn>): void;
-  /** The gesture is over: keep its edits on screen until the board answering them arrives. */
-  releasePreview(): void;
-  /** Stop drawing the gesture's edits, because no command was sent. */
-  discardPreview(): void;
+  /** The manipulation in progress, if any input is still moving, turning or resizing units. */
+  manipulation(): Manipulation | null;
+  /**
+   * The manipulation in progress, or a new one over the selected units as drawn. Null when
+   * nothing is in progress and nothing is selected.
+   */
+  manipulate(): Manipulation | null;
   /** Draw the marquee over this box, or hide it with null. */
   showMarquee(box: ScreenBox | null): void;
   /**

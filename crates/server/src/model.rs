@@ -15,6 +15,10 @@ use ts_rs::TS;
 /// Undo steps kept per umpire.
 const UNDO_LIMIT: usize = 200;
 
+/// The smallest and largest `Pawn::scale` a command may set.
+pub const MIN_SCALE: f32 = 0.25;
+pub const MAX_SCALE: f32 = 4.0;
+
 /// Keys an umpire's undo history and turn view.
 pub type UmpireId = u64;
 

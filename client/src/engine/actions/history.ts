@@ -1,4 +1,4 @@
-import type { Action } from "./Action";
+import type { PressAction } from "./Action";
 
 /**
  * Undo and redo. Each umpire has their own history on the server, so these take back only
@@ -11,7 +11,7 @@ export const undoAction = {
   run: (context) => {
     context.send({ type: "undo" });
   },
-} satisfies Action;
+} satisfies PressAction;
 
 export const redoAction = {
   id: "redo",
@@ -19,4 +19,4 @@ export const redoAction = {
   run: (context) => {
     context.send({ type: "redo" });
   },
-} satisfies Action;
+} satisfies PressAction;

@@ -1,4 +1,5 @@
 import type { Unit } from "../model";
+import type { Placement } from "../protocol";
 import type { TablePoint } from "./coords";
 
 /** The fields of one unit this client is showing as already changed. */
@@ -6,6 +7,24 @@ export interface PendingPawn {
   pos?: TablePoint;
   rot?: number;
   scale?: number;
+}
+
+/**
+ * The placements a command asks for, as edits to draw until the server answers. Only the
+ * fields a placement carries are copied, so the rest of each unit is drawn as it is.
+ */
+export function previewOf(
+  units: readonly Placement[],
+): Map<number, PendingPawn> {
+  return new Map(
+    units.map(({ id, pos, rot, scale }) => {
+      const edit: PendingPawn = {};
+      if (pos !== undefined) edit.pos = pos;
+      if (rot !== undefined) edit.rot = rot;
+      if (scale !== undefined) edit.scale = scale;
+      return [id, edit];
+    }),
+  );
 }
 
 /**

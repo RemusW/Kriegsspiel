@@ -3,7 +3,7 @@ import { screenPointOf, type PressPoint } from "../coords";
 import type { EditorContext } from "../EditorContext";
 import type { Keymap } from "../input/Keymap";
 import type { Gesture } from "./Gesture";
-import { toolById, type Tool } from "./Tool";
+import { toolById, type PressHit, type Tool } from "./Tool";
 
 /** How far the pointer may move between press and release, in CSS pixels, for a click. */
 const CLICK_SLOP = 4;
@@ -13,7 +13,8 @@ interface Press {
   /** The tool chosen when the press began, which handles the whole gesture. */
   tool: Tool | undefined;
   pointerId: number;
-  start: PressPoint;
+  /** Where the press was, and what was under it then. */
+  start: PressHit;
   /** Set once the pointer passed the click threshold, whether or not the tool took the drag. */
   dragging: boolean;
   /** The drag the tool began, if it took it. */
@@ -57,7 +58,7 @@ export class ToolInput {
     this.press = {
       tool: toolById(this.store.getState().tool),
       pointerId: event.pointerId,
-      start: this.keymap.press(event),
+      start: this.hit(this.keymap.press(event)),
       dragging: false,
       gesture: null,
     };
@@ -65,6 +66,15 @@ export class ToolInput {
     // toolbar, so the release is never missed.
     this.element.setPointerCapture(event.pointerId);
   };
+
+  /** What is under this press now, kept for when it becomes a drag. */
+  private hit(point: PressPoint): PressHit {
+    return {
+      ...point,
+      unit: this.context.pick.unit(point),
+      table: this.context.pick.table(point),
+    };
+  }
 
   private onPointerMove = (event: PointerEvent) => {
     const press = this.press;

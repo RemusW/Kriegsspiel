@@ -31,6 +31,10 @@ export const DEFAULT_BINDINGS: Bindings = {
   actions: {
     undo: [{ code: "KeyZ", chords: ["ctrl"] }],
     redo: [{ code: "KeyZ", chords: ["ctrl", "shift"] }],
+    turnLeft: [{ code: "KeyQ", chords: [] }],
+    turnRight: [{ code: "KeyE", chords: [] }],
+    grow: [{ code: "Equal", chords: [] }],
+    shrink: [{ code: "Minus", chords: [] }],
   },
 };
 

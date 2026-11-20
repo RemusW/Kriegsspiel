@@ -22,8 +22,8 @@ use axum::{
 };
 use tokio::sync::{RwLock, watch};
 
-use model::{Doc, Side, Step, UmpireId, UnitKind};
-use protocol::{ClientMessage, ServerMessage};
+use model::{Doc, MAX_SCALE, MIN_SCALE, Side, Step, UmpireId, UnitKind};
+use protocol::{ClientMessage, Placement, ServerMessage};
 
 pub const DEFAULT_PORT: u16 = 7878;
 
@@ -111,22 +111,25 @@ fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
                 board.spawn(kind, side, pos);
             }))
         }
-        ClientMessage::Move { moves } => {
-            if !moves.iter().all(|m| m.pos.iter().all(|v| v.is_finite())) {
+        ClientMessage::Place { units } => {
+            if !units.iter().all(valid_placement) {
                 return Effect::Me;
             }
-            // Another umpire may have removed a unit mid-drag: the rest still move, but with
-            // nothing left to move there is no reason to wake every connection.
-            let any_known = moves
+            // Another umpire may have removed a unit mid-drag: the rest still change, but with
+            // nothing left to change there is no reason to wake every connection.
+            let any_known = units
                 .iter()
-                .any(|m| doc.board.pawns.iter().any(|unit| unit.id == m.id));
+                .any(|p| doc.board.pawns.iter().any(|unit| unit.id == p.id));
             if !any_known {
                 return Effect::Me;
             }
             edited(doc.edit(umpire, |board| {
-                for m in &moves {
-                    if let Some(unit) = board.unit_mut(m.id) {
-                        unit.pawn.pos = m.pos;
+                for p in &units {
+                    if let Some(unit) = board.unit_mut(p.id) {
+                        let pawn = &mut unit.pawn;
+                        pawn.pos = p.pos.unwrap_or(pawn.pos);
+                        pawn.rot = p.rot.unwrap_or(pawn.rot);
+                        pawn.scale = p.scale.unwrap_or(pawn.scale);
                     }
                 }
             }))
@@ -136,6 +139,16 @@ fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
         ClientMessage::Undo => stepped(doc.undo(umpire)),
         ClientMessage::Redo => stepped(doc.redo(umpire)),
     }
+}
+
+/// Every value is finite, and the scale is within the allowed range. A number too large for
+/// f32, such as 1e39, arrives as infinity.
+fn valid_placement(p: &Placement) -> bool {
+    let pos_ok = p.pos.is_none_or(|pos| pos.iter().all(|v| v.is_finite()));
+    let rot_ok = p.rot.is_none_or(f32::is_finite);
+    // NaN fails the range check too.
+    let scale_ok = p.scale.is_none_or(|s| (MIN_SCALE..=MAX_SCALE).contains(&s));
+    pos_ok && rot_ok && scale_ok
 }
 
 /// A refused edit still sends its umpire a board, so their client stops showing it.
@@ -206,7 +219,6 @@ async fn client(mut socket: WebSocket, game: Game) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::UnitMove;
 
     fn spawn_at(pos: [f32; 2]) -> ClientMessage {
         ClientMessage::Spawn {
@@ -241,10 +253,22 @@ mod tests {
         assert_eq!(message, spawn_at([1.5, 2.0]));
     }
 
-    fn move_to(moves: &[(u64, [f32; 2])]) -> ClientMessage {
-        ClientMessage::Move {
-            moves: moves.iter().map(|&(id, pos)| UnitMove { id, pos }).collect(),
+    fn place(units: &[Placement]) -> ClientMessage {
+        ClientMessage::Place {
+            units: units.to_vec(),
         }
+    }
+
+    fn move_to(moves: &[(u64, [f32; 2])]) -> ClientMessage {
+        let units: Vec<_> = moves
+            .iter()
+            .map(|&(id, pos)| Placement {
+                id,
+                pos: Some(pos),
+                ..Placement::default()
+            })
+            .collect();
+        place(&units)
     }
 
     /// A board with an infantry unit at the origin and a cavalry unit at [1, 1].
@@ -372,9 +396,78 @@ mod tests {
     }
 
     #[test]
-    fn move_parses_from_client_json() {
-        let json = r#"{"type":"move","moves":[{"id":3,"pos":[1.5,-2]}]}"#;
+    fn place_parses_from_client_json() {
+        let json = r#"{"type":"place","units":[{"id":3,"pos":[1.5,-2]}]}"#;
         let message: ClientMessage = serde_json::from_str(json).unwrap();
         assert_eq!(message, move_to(&[(3, [1.5, -2.0])]));
+    }
+
+    #[test]
+    fn place_sets_only_the_fields_it_carries() {
+        let mut doc = two_units();
+        let turn = Placement {
+            id: 0,
+            pos: Some([2.0, 3.0]),
+            rot: Some(0.5),
+            ..Placement::default()
+        };
+        let grow = Placement {
+            id: 1,
+            scale: Some(2.0),
+            ..Placement::default()
+        };
+        assert_eq!(apply(&mut doc, 0, place(&[turn, grow])), Effect::Everyone);
+
+        let [a, b] = [&doc.board.pawns[0].pawn, &doc.board.pawns[1].pawn];
+        assert_eq!((a.pos, a.rot, a.scale), ([2.0, 3.0], 0.5, 1.0));
+        assert_eq!((b.pos, b.rot, b.scale), ([1.0, 1.0], 0.0, 2.0));
+
+        // Rotating a formation moves and turns its units in one undo step.
+        assert_eq!(doc.undo(0), model::Step::Applied);
+        let [a, b] = [&doc.board.pawns[0].pawn, &doc.board.pawns[1].pawn];
+        assert_eq!((a.pos, a.rot), ([0.0, 0.0], 0.0));
+        assert_eq!(b.scale, 1.0);
+    }
+
+    #[test]
+    fn place_rejects_bad_rotations_and_scales() {
+        let bad = [
+            Placement {
+                id: 0,
+                rot: Some(f32::INFINITY),
+                ..Placement::default()
+            },
+            Placement {
+                id: 0,
+                scale: Some(f32::NAN),
+                ..Placement::default()
+            },
+            Placement {
+                id: 0,
+                scale: Some(0.0),
+                ..Placement::default()
+            },
+            Placement {
+                id: 0,
+                scale: Some(MAX_SCALE * 2.0),
+                ..Placement::default()
+            },
+        ];
+        for p in bad {
+            let mut doc = two_units();
+            assert_eq!(apply(&mut doc, 0, place(&[p])), Effect::Me, "{p:?}");
+            assert_eq!(doc.board.pawns[0].pawn.rot, 0.0);
+            assert_eq!(doc.board.pawns[0].pawn.scale, 1.0);
+        }
+    }
+
+    #[test]
+    fn placement_json_leaves_out_unset_fields() {
+        let p = Placement {
+            id: 3,
+            rot: Some(1.0),
+            ..Placement::default()
+        };
+        assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"id":3,"rot":1.0}"#);
     }
 }

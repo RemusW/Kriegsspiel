@@ -16,6 +16,7 @@ import { CameraRig } from "./camera/CameraRig";
 import type { EditorContext } from "./EditorContext";
 import { KeyInput } from "./input/KeyInput";
 import { Keymap } from "./input/Keymap";
+import { Manipulation } from "./Manipulation";
 import { OVERLAY_LAYER } from "./layers";
 import { PawnLayer } from "./pawns/PawnLayer";
 import { PendingEdits } from "./PendingEdits";
@@ -46,6 +47,11 @@ export class KSEngine {
   private pending = new PendingEdits();
   /** The units as drawn: the board with `pending` applied. Everything picks against these. */
   private shown: readonly Unit[] = [];
+  /**
+   * The selection being moved, turned or resized, while any drag or held key is still doing
+   * so. At most one, so the inputs add up instead of each previewing the same units.
+   */
+  private manipulation: Manipulation | null = null;
 
   private resizeObserver: ResizeObserver;
   private unsubscribe: () => void;
@@ -86,15 +92,9 @@ export class KSEngine {
       units: () => this.shown,
       selection: () => store.getState().selection,
       select: (ids, mode) => store.getState().select(ids, mode),
-      preview: (edits) => {
-        this.pending.hold(edits);
-        this.refresh();
-      },
-      releasePreview: () => this.pending.release(),
-      discardPreview: () => {
-        this.pending.discard();
-        this.refresh();
-      },
+      manipulation: () => this.manipulation,
+      manipulate: () =>
+        (this.manipulation ??= this.startManipulation(connection)),
       showMarquee: (box) =>
         box
           ? this.marquee.show(box, canvas.getBoundingClientRect())
@@ -167,7 +167,33 @@ export class KSEngine {
         : Math.min((time - this.lastFrameTime) / 1000, MAX_FRAME_SECONDS);
     this.lastFrameTime = time;
     this.rig.update(dt);
+    this.keys.update(dt);
     this.renderer.render(this.scene, this.rig.camera);
+  }
+
+  /** A manipulation of the selected units as drawn, or null when nothing is selected. */
+  private startManipulation(connection: ServerConnection): Manipulation | null {
+    const selected = new Set(this.store.getState().selection);
+    const starts = this.shown.filter((unit) => selected.has(unit.id));
+    if (starts.length === 0) return null;
+    return new Manipulation(
+      {
+        preview: (edits) => {
+          this.pending.hold(edits);
+          this.refresh();
+        },
+        releasePreview: () => this.pending.release(),
+        discardPreview: () => {
+          this.pending.discard();
+          this.refresh();
+        },
+        send: (units) => connection.send({ type: "place", units }),
+        ended: () => {
+          this.manipulation = null;
+        },
+      },
+      starts,
+    );
   }
 
   /**
