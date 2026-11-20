@@ -99,6 +99,16 @@ impl Board {
     }
 }
 
+/// One recorded turn: the board as it stood, and when an umpire recorded it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Turn {
+    pub board: Board,
+    /// Milliseconds since the Unix epoch. The caller supplies it, so the document needs no
+    /// clock of its own and its tests stay deterministic.
+    pub recorded_at: u64,
+}
+
 /// The outcome of an undo or redo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -118,7 +128,7 @@ pub enum Step {
 pub struct Doc {
     /// The live board. Change it through [`Doc::edit`] so the change can be undone.
     pub board: Board,
-    pub turns: Vec<Board>,
+    pub turns: Vec<Turn>,
     umpires: HashMap<UmpireId, Umpire>,
 }
 
@@ -135,7 +145,7 @@ impl Doc {
     /// What this umpire should see: the recorded turn they are viewing, or the live board.
     pub fn shown(&self, umpire: UmpireId) -> &Board {
         match self.viewing(umpire) {
-            Some(i) => &self.turns[i],
+            Some(i) => &self.turns[i].board,
             None => &self.board,
         }
     }
@@ -204,9 +214,13 @@ impl Doc {
         if skipped { Step::Partial } else { Step::Applied }
     }
 
-    /// Record the live board as a new turn. Returns the number of recorded turns.
-    pub fn record_turn(&mut self) -> usize {
-        self.turns.push(self.board.clone());
+    /// Record the live board as a new turn, stamped with `recorded_at` (milliseconds since
+    /// the Unix epoch). Returns the number of recorded turns.
+    pub fn record_turn(&mut self, recorded_at: u64) -> usize {
+        self.turns.push(Turn {
+            board: self.board.clone(),
+            recorded_at,
+        });
         self.turns.len()
     }
 
@@ -224,13 +238,23 @@ impl Doc {
         };
     }
 
+    /// Show this umpire one recorded turn, or the live board with `None`. Refused, returning
+    /// false, for a turn that does not exist; the view is then left as it was.
+    pub fn view_turn(&mut self, umpire: UmpireId, turn: Option<usize>) -> bool {
+        if turn.is_some_and(|i| i >= self.turns.len()) {
+            return false;
+        }
+        self.umpires.entry(umpire).or_default().viewing = turn;
+        true
+    }
+
     /// Make the turn this umpire is viewing the live board, as one undoable edit.
     pub fn restore_viewed_turn(&mut self, umpire: UmpireId) -> bool {
         let Some(i) = self.umpires.get_mut(&umpire).and_then(|u| u.viewing.take()) else {
             return false;
         };
-        let turn = self.turns[i].clone();
-        self.edit(umpire, |board| *board = turn)
+        let board = self.turns[i].board.clone();
+        self.edit(umpire, |b| *b = board)
     }
 }
 
@@ -487,7 +511,7 @@ mod tests {
     #[test]
     fn ids_are_never_reused() {
         let mut doc = Doc::default();
-        doc.record_turn();
+        doc.record_turn(0);
         doc.edit(A, |b| {
             b.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
         });
@@ -508,9 +532,9 @@ mod tests {
     #[test]
     fn turn_viewing_is_per_umpire_and_read_only() {
         let mut doc = Doc::default();
-        doc.record_turn();
+        doc.record_turn(0);
         doc.board.spawn(UnitKind::Cavalry, Side::Red, [1.0, 1.0]);
-        doc.record_turn();
+        doc.record_turn(0);
         doc.board.spawn(UnitKind::Artillery, Side::Red, [1.0, 1.0]);
 
         doc.step_turn(A, false);
@@ -531,10 +555,29 @@ mod tests {
     }
 
     #[test]
+    fn viewing_jumps_to_a_turn_and_refuses_one_that_does_not_exist() {
+        let mut doc = Doc::default();
+        doc.record_turn(1000);
+        doc.board.spawn(UnitKind::Cavalry, Side::Red, [1.0, 1.0]);
+        doc.record_turn(2000);
+
+        assert!(doc.view_turn(A, Some(0)));
+        assert_eq!(doc.viewing(A), Some(0));
+        assert!(doc.shown(A).pawns.is_empty());
+
+        assert!(!doc.view_turn(A, Some(2)), "no third turn to look at");
+        assert_eq!(doc.viewing(A), Some(0), "the view is left as it was");
+
+        assert!(doc.view_turn(A, None));
+        assert_eq!(doc.viewing(A), None);
+        assert_eq!(doc.turns[1].recorded_at, 2000);
+    }
+
+    #[test]
     fn restoring_a_turn_is_one_undo_step() {
         let mut doc = Doc::default();
         doc.board.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
-        doc.record_turn();
+        doc.record_turn(0);
         doc.board.spawn(UnitKind::Cavalry, Side::Red, [1.0, 1.0]);
 
         doc.step_turn(A, false);

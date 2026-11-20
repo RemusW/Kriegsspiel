@@ -91,6 +91,7 @@ export class KSEngine {
       pick: this.picker,
       units: () => this.shown,
       selection: () => store.getState().selection,
+      readOnly: () => store.getState().viewing !== null,
       select: (ids, mode) => store.getState().select(ids, mode),
       manipulation: () => this.manipulation,
       manipulate: () =>
@@ -173,6 +174,8 @@ export class KSEngine {
 
   /** A manipulation of the selected units as drawn, or null when nothing is selected. */
   private startManipulation(connection: ServerConnection): Manipulation | null {
+    // Nothing is moved, turned or resized while a recorded turn is on screen.
+    if (this.store.getState().viewing !== null) return null;
     const selected = new Set(this.store.getState().selection);
     const starts = this.shown.filter((unit) => selected.has(unit.id));
     if (starts.length === 0) return null;

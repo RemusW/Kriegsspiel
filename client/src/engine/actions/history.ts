@@ -9,6 +9,8 @@ export const undoAction = {
   id: "undo",
   label: "Undo",
   run: (context) => {
+    // A recorded turn on screen is read-only, history included: the server would refuse it.
+    if (context.readOnly()) return;
     context.send({ type: "undo" });
   },
 } satisfies PressAction;
@@ -17,6 +19,7 @@ export const redoAction = {
   id: "redo",
   label: "Redo",
   run: (context) => {
+    if (context.readOnly()) return;
     context.send({ type: "redo" });
   },
 } satisfies PressAction;

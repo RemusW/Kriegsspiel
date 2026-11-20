@@ -16,6 +16,12 @@ export interface EditorContext {
   units(): readonly Unit[];
   /** Ids of the selected units. */
   selection(): readonly number[];
+  /**
+   * True while a recorded turn is on screen instead of the live board. It is read-only for
+   * this umpire, so nothing offers an edit the server would only refuse. Selecting still
+   * works: the past is there to be looked at.
+   */
+  readOnly(): boolean;
   /** Change the selection. Ids that are not on the board are ignored. */
   select(ids: number[], mode: SelectMode): void;
   /** The manipulation in progress, if any input is still moving, turning or resizing units. */

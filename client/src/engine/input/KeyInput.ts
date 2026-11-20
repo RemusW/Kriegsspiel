@@ -1,7 +1,7 @@
 import { actionById, type KeyHold } from "../actions/Action";
 import type { EditorContext } from "../EditorContext";
 import type { Keymap } from "./Keymap";
-import { isTextInput } from "./textInput";
+import { belongsToControl } from "./textInput";
 
 /**
  * The window's one owner of keys that ask for something. `KeyState` is the other keyboard
@@ -38,8 +38,9 @@ export class KeyInput {
   }
 
   private onKeyDown = (event: KeyboardEvent) => {
-    // While typing, the keys belong to the field, Ctrl+Z included.
-    if (isTextInput(event.target)) return;
+    // While typing, the keys belong to the field, Ctrl+Z included; so does the Enter that
+    // presses a focused button.
+    if (belongsToControl(event)) return;
     const id = this.keymap.action(event);
     if (!id) return;
     const action = actionById(id);

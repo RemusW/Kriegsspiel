@@ -1,6 +1,7 @@
 import { useClientStore } from "../state/store";
 import { useGameConnection } from "../useGameConnection";
 import styles from "./GameScreen.module.css";
+import { Timeline } from "./Timeline";
 import { Toolbar } from "./Toolbar";
 
 export function GameScreen() {
@@ -11,6 +12,7 @@ export function GameScreen() {
   return (
     <>
       <Toolbar />
+      <Timeline />
       <div className={styles.status}>
         Server: {connection} | Units: {pawns.length}
       </div>

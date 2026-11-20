@@ -10,6 +10,7 @@ export const spawnTool = {
   id: "spawn",
   label: "Spawn: click the map to place an infantry unit",
   click: (context: EditorContext, press: PressPoint) => {
+    if (context.readOnly()) return;
     const pos = context.pick.table(press);
     if (!pos) return;
     context.send({ type: "spawn", kind: "Infantry", side: "Blue", pos });

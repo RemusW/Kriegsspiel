@@ -35,6 +35,11 @@ export const DEFAULT_BINDINGS: Bindings = {
     turnRight: [{ code: "KeyE", chords: [] }],
     grow: [{ code: "Equal", chords: [] }],
     shrink: [{ code: "Minus", chords: [] }],
+    // Recording and restoring are on the timeline bar, bound to no key by default.
+    recordTurn: [],
+    previousTurn: [{ code: "Comma", chords: [] }],
+    nextTurn: [{ code: "Period", chords: [] }],
+    restoreTurn: [],
   },
 };
 

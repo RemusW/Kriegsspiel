@@ -23,7 +23,7 @@ use axum::{
 use tokio::sync::{RwLock, watch};
 
 use model::{Doc, MAX_SCALE, MIN_SCALE, Side, Step, UmpireId, UnitKind};
-use protocol::{ClientMessage, Placement, ServerMessage};
+use protocol::{ClientMessage, Placement, ServerMessage, TurnInfo};
 
 pub const DEFAULT_PORT: u16 = 7878;
 
@@ -79,10 +79,18 @@ impl Game {
 
     /// Send this umpire's view of the document. Fails once the connection has closed.
     async fn send_view(&self, socket: &mut WebSocket, umpire: UmpireId) -> Result<(), axum::Error> {
-        // Clone and release the lock before sending, so a slow client never holds it.
-        let board = self.doc.read().await.shown(umpire).clone();
-        let text = serde_json::to_string(&ServerMessage::Snapshot { board })
-            .expect("boards always serialize");
+        // Take everything the snapshot needs under one read, so the board and the turn it
+        // came from cannot disagree, and release the lock before sending: a slow client must
+        // never hold it.
+        let snapshot = {
+            let doc = self.doc.read().await;
+            ServerMessage::Snapshot {
+                board: doc.shown(umpire).clone(),
+                turns: doc.turns.iter().map(TurnInfo::from).collect(),
+                viewing: doc.viewing(umpire),
+            }
+        };
+        let text = serde_json::to_string(&snapshot).expect("boards always serialize");
         socket.send(Message::Text(text.into())).await
     }
 }
@@ -138,7 +146,37 @@ fn apply(doc: &mut Doc, umpire: UmpireId, message: ClientMessage) -> Effect {
         // back something this umpire did.
         ClientMessage::Undo => stepped(doc.undo(umpire)),
         ClientMessage::Redo => stepped(doc.redo(umpire)),
+        ClientMessage::RecordTurn => {
+            // Read-only while viewing a turn: the board that would be recorded is not the one
+            // this umpire is looking at.
+            if doc.viewing(umpire).is_some() {
+                return Effect::Me;
+            }
+            doc.record_turn(now_millis());
+            // The turn list is part of every client's view, so everyone is told.
+            Effect::Everyone
+        }
+        // Which turn an umpire looks at is theirs alone, so only they are sent a board, and
+        // they are sent one even when the turn asked for does not exist: their client is
+        // showing a timeline and must be told what it is really looking at.
+        ClientMessage::StepTurn { forward } => {
+            doc.step_turn(umpire, forward);
+            Effect::Me
+        }
+        ClientMessage::ViewTurn { turn } => {
+            doc.view_turn(umpire, turn);
+            Effect::Me
+        }
+        ClientMessage::RestoreTurn => edited(doc.restore_viewed_turn(umpire)),
     }
+}
+
+/// Wall-clock milliseconds since the Unix epoch, for stamping a recorded turn. A clock set
+/// before 1970 stamps it 0 rather than failing the command.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64)
 }
 
 /// Every value is finite, and the scale is within the allowed range. A number too large for
@@ -321,7 +359,7 @@ mod tests {
     #[test]
     fn an_edit_refused_while_viewing_a_turn_answers_the_sender() {
         let mut doc = two_units();
-        doc.record_turn();
+        doc.record_turn(0);
         doc.step_turn(0, false);
         assert!(doc.viewing(0).is_some());
         // Read-only for this umpire, but their client is already showing the drag.
@@ -375,7 +413,7 @@ mod tests {
     fn undo_while_viewing_a_turn_answers_the_sender() {
         let mut doc = two_units();
         apply(&mut doc, 0, move_to(&[(0, [5.0, 6.0])]));
-        doc.record_turn();
+        doc.record_turn(0);
         doc.step_turn(0, false);
         assert!(doc.viewing(0).is_some());
 
@@ -393,6 +431,127 @@ mod tests {
             serde_json::from_str::<ClientMessage>(r#"{"type":"redo"}"#).unwrap(),
             ClientMessage::Redo
         );
+    }
+
+    #[test]
+    fn recording_a_turn_stamps_it_and_tells_everyone() {
+        let mut doc = two_units();
+        assert_eq!(apply(&mut doc, 0, ClientMessage::RecordTurn), Effect::Everyone);
+        assert_eq!(doc.turns.len(), 1);
+        assert_eq!(doc.turns[0].board.pawns.len(), 2);
+        assert!(doc.turns[0].recorded_at > 0, "stamped from the wall clock");
+
+        // The recorded turn is a copy: later edits leave it alone.
+        apply(&mut doc, 0, move_to(&[(0, [9.0, 9.0])]));
+        assert_eq!(doc.turns[0].board.pawns[0].pawn.pos, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn recording_while_viewing_a_turn_is_refused() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, ClientMessage::RecordTurn);
+        apply(&mut doc, 0, ClientMessage::StepTurn { forward: false });
+
+        assert_eq!(apply(&mut doc, 0, ClientMessage::RecordTurn), Effect::Me);
+        assert_eq!(doc.turns.len(), 1);
+    }
+
+    #[test]
+    fn stepping_turns_changes_only_the_senders_view() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, ClientMessage::RecordTurn);
+        apply(&mut doc, 0, move_to(&[(0, [5.0, 5.0])]));
+
+        // Back from the live board goes to the last turn, which that umpire alone sees.
+        assert_eq!(
+            apply(&mut doc, 0, ClientMessage::StepTurn { forward: false }),
+            Effect::Me
+        );
+        assert_eq!(doc.viewing(0), Some(0));
+        assert_eq!(doc.viewing(1), None);
+        assert_eq!(doc.shown(0).pawns[0].pawn.pos, [0.0, 0.0]);
+        assert_eq!(doc.shown(1).pawns[0].pawn.pos, [5.0, 5.0]);
+
+        // Forward past the last turn returns to the live board.
+        apply(&mut doc, 0, ClientMessage::StepTurn { forward: true });
+        assert_eq!(doc.viewing(0), None);
+    }
+
+    #[test]
+    fn viewing_a_turn_that_does_not_exist_answers_the_sender() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, ClientMessage::RecordTurn);
+
+        let jump = |turn| ClientMessage::ViewTurn { turn };
+        assert_eq!(apply(&mut doc, 0, jump(Some(0))), Effect::Me);
+        assert_eq!(doc.viewing(0), Some(0));
+        // Refused, but the sender is still sent a board: its timeline must show the truth.
+        assert_eq!(apply(&mut doc, 0, jump(Some(7))), Effect::Me);
+        assert_eq!(doc.viewing(0), Some(0));
+        assert_eq!(apply(&mut doc, 0, jump(None)), Effect::Me);
+        assert_eq!(doc.viewing(0), None);
+    }
+
+    #[test]
+    fn restoring_a_turn_changes_the_live_board_for_everyone() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, ClientMessage::RecordTurn);
+        apply(&mut doc, 0, move_to(&[(0, [5.0, 5.0])]));
+        apply(&mut doc, 0, ClientMessage::ViewTurn { turn: Some(0) });
+
+        assert_eq!(apply(&mut doc, 0, ClientMessage::RestoreTurn), Effect::Everyone);
+        assert_eq!(doc.viewing(0), None, "back on the live board");
+        assert_eq!(doc.board.pawns[0].pawn.pos, [0.0, 0.0]);
+
+        // One undoable edit, so a restore made by mistake is taken back like any other.
+        assert_eq!(apply(&mut doc, 0, ClientMessage::Undo), Effect::Everyone);
+        assert_eq!(doc.board.pawns[0].pawn.pos, [5.0, 5.0]);
+    }
+
+    #[test]
+    fn restoring_without_viewing_a_turn_answers_the_sender() {
+        let mut doc = two_units();
+        assert_eq!(apply(&mut doc, 0, ClientMessage::RestoreTurn), Effect::Me);
+        assert!(doc.turns.is_empty());
+    }
+
+    #[test]
+    fn turn_commands_parse_from_client_json() {
+        let parse = |json: &str| serde_json::from_str::<ClientMessage>(json).unwrap();
+        assert_eq!(parse(r#"{"type":"recordTurn"}"#), ClientMessage::RecordTurn);
+        assert_eq!(
+            parse(r#"{"type":"stepTurn","forward":true}"#),
+            ClientMessage::StepTurn { forward: true }
+        );
+        assert_eq!(
+            parse(r#"{"type":"viewTurn","turn":2}"#),
+            ClientMessage::ViewTurn { turn: Some(2) }
+        );
+        assert_eq!(
+            parse(r#"{"type":"viewTurn","turn":null}"#),
+            ClientMessage::ViewTurn { turn: None }
+        );
+        assert_eq!(parse(r#"{"type":"restoreTurn"}"#), ClientMessage::RestoreTurn);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_turn_list_and_the_turn_being_viewed() {
+        let mut doc = two_units();
+        apply(&mut doc, 0, ClientMessage::RecordTurn);
+        apply(&mut doc, 0, ClientMessage::ViewTurn { turn: Some(0) });
+
+        let snapshot = ServerMessage::Snapshot {
+            board: doc.shown(0).clone(),
+            turns: doc.turns.iter().map(TurnInfo::from).collect(),
+            viewing: doc.viewing(0),
+        };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["type"], "snapshot");
+        assert_eq!(json["viewing"], 0);
+        assert_eq!(json["turns"][0]["pawns"], 2);
+        assert!(json["turns"][0]["recordedAt"].is_number());
+        // The recorded boards stay on the server.
+        assert!(json["turns"][0]["board"].is_null());
     }
 
     #[test]

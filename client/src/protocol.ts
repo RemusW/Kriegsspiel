@@ -6,6 +6,7 @@ export type {
   ClientMessage,
   Placement,
   ServerMessage,
+  TurnInfo,
 } from "./bindings/protocol";
 
 /** Matches `DEFAULT_PORT` in `crates/server/src/lib.rs`. */

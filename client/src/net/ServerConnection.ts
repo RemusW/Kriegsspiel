@@ -4,9 +4,12 @@ import {
   type ClientMessage,
   type ServerMessage,
 } from "../protocol";
-import { clientStore, type ClientStore } from "../state/store";
+import { clientStore, type ClientStore, type View } from "../state/store";
 
 const RETRY_MS = 1500;
+
+/** What is shown while no server has sent anything: an empty table and no history. */
+const BLANK_VIEW: View = { board: EMPTY_BOARD, turns: [], viewing: null };
 
 function serverUrl(): string {
   const host = window.location.hostname || "localhost";
@@ -33,7 +36,7 @@ export class ServerConnection {
     const socket = this.socket;
     this.socket = null;
     socket?.close();
-    this.store.getState().setBoard(EMPTY_BOARD);
+    this.store.getState().showView(BLANK_VIEW);
   }
 
   /**
@@ -48,7 +51,7 @@ export class ServerConnection {
   }
 
   private open() {
-    const { setBoard, setConnection } = this.store.getState();
+    const { showView, setConnection } = this.store.getState();
     setConnection("connecting");
 
     const socket = new WebSocket(serverUrl());
@@ -57,7 +60,8 @@ export class ServerConnection {
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data as string) as ServerMessage;
       if (message.type === "snapshot") {
-        setBoard(message.board);
+        const { board, turns, viewing } = message;
+        showView({ board, turns, viewing });
       }
     };
     socket.onclose = () => {

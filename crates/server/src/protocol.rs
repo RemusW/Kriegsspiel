@@ -4,14 +4,44 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::model::{Board, Side, UnitKind};
+use crate::model::{Board, Side, Turn, UnitKind};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(export, export_to = "protocol.ts")]
 pub enum ServerMessage {
-    /// The board this client should show.
-    Snapshot { board: Board },
+    /// Everything this client should show: the board, the recorded turns it may step
+    /// through, and which of them it is looking at.
+    Snapshot {
+        board: Board,
+        /// Every recorded turn, oldest first. Their boards are not sent; stepping to one
+        /// asks the server for it.
+        turns: Vec<TurnInfo>,
+        /// The recorded turn this client is viewing, as an index into `turns`. `None` is the
+        /// live board.
+        viewing: Option<usize>,
+    },
+}
+
+/// What a client is told about one recorded turn: enough to list and label it, without the
+/// board it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "protocol.ts")]
+pub struct TurnInfo {
+    /// Milliseconds since the Unix epoch, when an umpire recorded the turn.
+    pub recorded_at: u64,
+    /// How many units the recorded board holds.
+    pub pawns: usize,
+}
+
+impl From<&Turn> for TurnInfo {
+    fn from(turn: &Turn) -> Self {
+        Self {
+            recorded_at: turn.recorded_at,
+            pawns: turn.board.pawns.len(),
+        }
+    }
 }
 
 /// Where one unit should end up and how it should sit. Every value is absolute, so a command
@@ -56,4 +86,20 @@ pub enum ClientMessage {
     Undo,
     /// Put back this umpire's last undone edit.
     Redo,
+    /// Record the live board as a new turn, which every client may then step through.
+    /// Refused while the sender is viewing a recorded turn, since that is not the board it
+    /// would record.
+    RecordTurn,
+    /// Move this umpire's view one turn back or forward. Stepping back from the live board
+    /// goes to the last turn; stepping forward past the last turn returns to the live board.
+    StepTurn { forward: bool },
+    /// Show this umpire one recorded turn, or the live board with `null`. Only this umpire's
+    /// view changes; the others keep working on the live board.
+    ViewTurn {
+        #[serde(default)]
+        turn: Option<usize>,
+    },
+    /// Copy the turn this umpire is viewing into the live board, as one undoable edit, and
+    /// return them to the live board.
+    RestoreTurn,
 }

@@ -6,6 +6,12 @@ import {
   turnLeftAction,
   turnRightAction,
 } from "./placement";
+import {
+  nextTurnAction,
+  previousTurnAction,
+  recordTurnAction,
+  restoreTurnAction,
+} from "./turns";
 
 /** One thing a key asks for when it is pressed. A held key repeats it. */
 export interface PressAction {
@@ -44,6 +50,10 @@ export const ACTIONS = [
   turnRightAction,
   growAction,
   shrinkAction,
+  recordTurnAction,
+  previousTurnAction,
+  nextTurnAction,
+  restoreTurnAction,
 ] as const;
 
 /** The id of one of the actions; what `Bindings` maps keys to. */
