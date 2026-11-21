@@ -2,8 +2,7 @@
 //!
 //! An asset's id is the SHA-256 of its bytes, which does three jobs at once. The same image
 //! added twice is stored once; an id can never come to mean a different image, so clients may
-//! cache `/assets/{id}` forever; and a client that hashes a file itself knows the id before
-//! the upload finishes, so it can send the command that uses the image straight after the
+//! cache `/assets/{id}` forever; and a client that hashes a file itself knows the id before the upload finishes, so it can send the command that uses the image straight after the
 //! bytes without waiting for a reply.
 //!
 //! Only PNG and JPEG are accepted, read from each image's own header rather than from a file

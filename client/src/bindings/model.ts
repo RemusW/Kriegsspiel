@@ -5,9 +5,41 @@
  */
 export type Board = { 
 /**
- * Asset id of the map image.
+ * The images laid on the table, bottom to top: where two sheets overlap, the later one
+ * is drawn over the earlier.
  */
-mapImage: string | null, pawns: Array<Unit>, nextId: number, };
+maps: Array<MapImage>, pawns: Array<Unit>, 
+/**
+ * Issues ids for everything on the board, maps and units alike.
+ */
+nextId: number, };
+
+/**
+ * One image laid on the table. A game may have several at once: a theatre map with town
+ * plans beside it, or two survey sheets covering one front.
+ *
+ * The sheet's extent is held here rather than worked out from the image by each client, so
+ * every client agrees on where its edges are and can draw it at the right shape before the
+ * image has finished loading.
+ */
+export type MapImage = { 
+/**
+ * Stable across snapshots, from the same counter as the units', and never reused.
+ */
+id: number, 
+/**
+ * Asset id of the image. Never `None`, unlike a unit's: a map is its image.
+ */
+asset: string, 
+/**
+ * Centre of the sheet on the table (world X, world Z).
+ */
+pos: [number, number], 
+/**
+ * Extent of the sheet (world X, world Z). Only the server sets it, from the pixel size
+ * in the image's own header, so a map always keeps its image's aspect ratio.
+ */
+size: [number, number], };
 
 /**
  * Where a piece sits on the table and how its block is drawn.

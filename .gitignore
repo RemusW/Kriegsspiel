@@ -29,3 +29,9 @@ dist-ssr
 # Sample and scratch save files kept beside the other assets. They are generated, and one
 # carrying a real map image is tens of megabytes, which does not belong in the history.
 client/assets/*.ksg
+
+# Local issue tracker (docs/agents/issue-tracker.md); kept out of git for now.
+.scratch/
+docs/
+GLOSSARY.md
+CLAUDE.md

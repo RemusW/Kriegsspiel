@@ -250,11 +250,21 @@ fn apply(
             Effect::Me
         }
         ClientMessage::RestoreTurn => edited(doc.restore_viewed_turn(umpire)),
-        ClientMessage::SetMapImage { asset } => {
-            if !known_asset(assets, &asset) {
+        ClientMessage::AddMap { asset } => {
+            // The image's own size decides the sheet's shape, so a map can only be laid
+            // from an image the store holds.
+            let Some(pixels) = asset_pixels(assets, &asset) else {
+                return Effect::Me;
+            };
+            edited(doc.edit(umpire, |board| {
+                board.add_map(asset, pixels);
+            }))
+        }
+        ClientMessage::RemoveMaps { maps } => {
+            if !any_map_on_board(doc, &maps) {
                 return Effect::Me;
             }
-            edited(doc.edit(umpire, |board| board.map_image = asset))
+            edited(doc.edit(umpire, |board| board.remove_maps(&maps)))
         }
         ClientMessage::SetUnitImage { units, asset } => {
             if !known_asset(assets, &asset) {
@@ -280,6 +290,25 @@ fn apply(
 fn any_on_board(doc: &Doc, ids: impl IntoIterator<Item = u64>) -> bool {
     ids.into_iter()
         .any(|id| doc.board.pawns.iter().any(|unit| unit.id == id))
+}
+
+/// Whether any of these maps is still on the live board. As with units, another umpire may
+/// have taken them off already, and then there is nothing to wake every connection for.
+fn any_map_on_board(doc: &Doc, ids: &[u64]) -> bool {
+    doc.board.maps.iter().any(|map| ids.contains(&map.id))
+}
+
+/// The pixel size of a stored image, which is what a new map's extent is worked out from.
+/// `None` for an image that was never uploaded, which refuses the command for the reason
+/// [`known_asset`] gives.
+fn asset_pixels(assets: &AssetStore, asset: &str) -> Option<(u32, u32)> {
+    match assets.get(asset) {
+        Some(image) => Some((image.width, image.height)),
+        None => {
+            eprintln!("refusing a command: no image {asset} has been uploaded");
+            None
+        }
+    }
 }
 
 /// Whether an image a command names can be used: either it is already in the store, or the
@@ -851,24 +880,46 @@ mod tests {
     }
 
     #[test]
-    fn setting_the_map_image_is_one_undoable_edit() {
+    fn laying_a_map_is_one_undoable_edit_and_takes_the_image_s_shape() {
         let mut doc = two_units();
         let mut store = AssetStore::default();
         let map = store.insert(test_png(2048, 1024)).unwrap();
 
-        let set = |asset| ClientMessage::SetMapImage { asset };
-        let effect = super::apply(&mut doc, &store, 0, set(Some(map.clone())));
+        let add = |asset: &String| ClientMessage::AddMap {
+            asset: asset.clone(),
+        };
+        let effect = super::apply(&mut doc, &store, 0, add(&map));
         assert_eq!(effect, Effect::Everyone);
-        assert_eq!(doc.board.map_image, Some(map.clone()));
+        assert_eq!(doc.board.maps[0].asset, map);
+        // Twice as wide as it is tall, as the image is: the client is never asked.
+        assert_eq!(doc.board.maps[0].size, [100.0, 50.0]);
+
+        // The same image again is a second map, not a replacement.
+        assert_eq!(super::apply(&mut doc, &store, 0, add(&map)), Effect::Everyone);
+        assert_eq!(doc.board.maps.len(), 2);
+        assert!(
+            doc.board.maps[1].pos[0] > doc.board.maps[0].pos[0],
+            "and it is laid clear of the first"
+        );
 
         // Undo puts the table back as it was, like any other edit.
         assert_eq!(doc.undo(0), model::Step::Applied);
-        assert_eq!(doc.board.map_image, None);
+        assert_eq!(doc.board.maps.len(), 1);
         assert_eq!(doc.redo(0), model::Step::Applied);
 
-        // And it can be cleared.
-        assert_eq!(super::apply(&mut doc, &store, 0, set(None)), Effect::Everyone);
-        assert_eq!(doc.board.map_image, None);
+        // And a map can be taken off again, in one step for the lot.
+        let ids: Vec<u64> = doc.board.maps.iter().map(|m| m.id).collect();
+        let remove = ClientMessage::RemoveMaps { maps: ids };
+        assert_eq!(super::apply(&mut doc, &store, 0, remove), Effect::Everyone);
+        assert!(doc.board.maps.is_empty());
+    }
+
+    #[test]
+    fn taking_off_maps_that_are_not_there_answers_only_the_sender() {
+        let mut doc = two_units();
+        let store = AssetStore::default();
+        let remove = ClientMessage::RemoveMaps { maps: vec![9, 10] };
+        assert_eq!(super::apply(&mut doc, &store, 0, remove), Effect::Me);
     }
 
     #[test]
@@ -877,11 +928,11 @@ mod tests {
         let store = AssetStore::default();
         let stranger = assets::asset_id(b"never uploaded");
 
-        let map = ClientMessage::SetMapImage {
-            asset: Some(stranger.clone()),
+        let map = ClientMessage::AddMap {
+            asset: stranger.clone(),
         };
         assert_eq!(super::apply(&mut doc, &store, 0, map), Effect::Me);
-        assert_eq!(doc.board.map_image, None, "the board names no missing image");
+        assert!(doc.board.maps.is_empty(), "the board names no missing image");
 
         let unit = ClientMessage::SetUnitImage {
             units: vec![0],
@@ -915,14 +966,12 @@ mod tests {
         let parse = |json: &str| serde_json::from_str::<ClientMessage>(json).unwrap();
         let id = "a".repeat(64);
         assert_eq!(
-            parse(&format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#)),
-            ClientMessage::SetMapImage {
-                asset: Some(id.clone())
-            }
+            parse(&format!(r#"{{"type":"addMap","asset":"{id}"}}"#)),
+            ClientMessage::AddMap { asset: id.clone() }
         );
         assert_eq!(
-            parse(r#"{"type":"setMapImage","asset":null}"#),
-            ClientMessage::SetMapImage { asset: None }
+            parse(r#"{"type":"removeMaps","maps":[3,4]}"#),
+            ClientMessage::RemoveMaps { maps: vec![3, 4] }
         );
         assert_eq!(
             parse(&format!(
@@ -941,7 +990,7 @@ mod tests {
         let id = game.add_asset(test_png(1024, 512)).await.unwrap();
         game.receive(0, r#"{"type":"spawn","kind":"Cavalry","side":"Red","pos":[4,5]}"#)
             .await;
-        game.receive(0, &format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#))
+        game.receive(0, &format!(r#"{{"type":"addMap","asset":"{id}"}}"#))
             .await;
         game.receive(0, r#"{"type":"recordTurn"}"#).await;
 
@@ -952,7 +1001,8 @@ mod tests {
         let other = Game::new(Doc::default());
         other.load(file.into()).await.unwrap();
         let doc = other.doc.read().await;
-        assert_eq!(doc.board.map_image, Some(id.clone()));
+        assert_eq!(doc.board.maps[0].asset, id);
+        assert_eq!(doc.board.maps[0].size, [100.0, 50.0], "1024 x 512 pixels");
         assert_eq!(doc.board.pawns[0].pawn.pos, [4.0, 5.0]);
         assert_eq!(doc.turns.len(), 1);
         // The image came with it, so the new game can serve it to its own clients.
@@ -1018,7 +1068,7 @@ mod tests {
         // must not make every player redraw. The command that uses it is what they hear.
         assert!(!changed.has_changed().unwrap());
 
-        game.receive(0, &format!(r#"{{"type":"setMapImage","asset":"{id}"}}"#))
+        game.receive(0, &format!(r#"{{"type":"addMap","asset":"{id}"}}"#))
             .await;
         assert!(changed.has_changed().unwrap(), "laying it down is an edit");
     }

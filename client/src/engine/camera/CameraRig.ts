@@ -1,5 +1,6 @@
 import { MathUtils, PerspectiveCamera } from "three/webgpu";
 import type { CameraMode } from "../../state/store";
+import type { TableArea } from "../coords";
 import type { Keymap } from "../input/Keymap";
 import { FlyController } from "./FlyController";
 import { KeyState } from "./KeyState";
@@ -12,7 +13,7 @@ const FAR = 1000;
 
 /** How far below the horizon the camera looks when framing a map. */
 const FRAME_PITCH = MathUtils.degToRad(50);
-/** Framing distance from the map's centre, as a multiple of its longer side. */
+/** Framing distance from the area's centre, as a multiple of its longer side. */
 const FRAME_DISTANCE = 1.4;
 
 /** One way of steering the camera from mouse and keyboard input. */
@@ -72,17 +73,17 @@ export class CameraRig {
   }
 
   /**
-   * Place the camera south of a map centred on the origin, looking north at its centre, far
-   * enough back that the whole map is in view.
+   * Place the camera south of this part of the table, looking north at its centre, far
+   * enough back that the whole of it is in view.
    */
-  frameMap(width: number, depth: number) {
+  frameArea({ centre: [x, z], width, depth }: TableArea) {
     const distance = FRAME_DISTANCE * Math.max(width, depth);
     this.camera.position.set(
-      0,
+      x,
       distance * Math.sin(FRAME_PITCH),
-      distance * Math.cos(FRAME_PITCH),
+      z + distance * Math.cos(FRAME_PITCH),
     );
-    this.camera.lookAt(0, 0, 0);
+    this.camera.lookAt(x, 0, z);
     this.controller.sync();
   }
 

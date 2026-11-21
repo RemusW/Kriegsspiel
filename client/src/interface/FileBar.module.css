@@ -58,6 +58,63 @@
   background: var(--panel-border);
 }
 
+/* The maps on the table, newest last: the order they are drawn in, so this list reads
+   bottom to top like the stack of sheets it describes. */
+.maps {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.map {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 2px 6px;
+  font: 12px var(--font-ui);
+  border-radius: var(--control-radius);
+}
+
+.map:nth-child(odd) {
+  background: var(--control-bg);
+}
+
+.size {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
+.remove {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font: 13px var(--font-ui);
+  line-height: 1;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  cursor: pointer;
+}
+
+.remove:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: var(--control-hover-bg);
+  border-color: var(--control-border);
+}
+
+.remove:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* The one place a reason from the server is shown: a refused image, or a save that would
    not load. Clicking it dismisses it. */
 .notice {

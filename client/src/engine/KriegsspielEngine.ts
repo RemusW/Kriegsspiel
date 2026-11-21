@@ -8,7 +8,7 @@ import { KeyInput } from "./input/KeyInput";
 import { Keymap } from "./input/Keymap";
 import { Manipulation } from "./Manipulation";
 import { OVERLAY_LAYER } from "./layers";
-import { BLANK_MAP_DEPTH, MAP_WIDTH, MapPlane } from "./map/MapPlane";
+import { BLANK_TABLE, MapTable } from "./map/MapTable";
 import { PawnLayer } from "./pawns/PawnLayer";
 import { PendingEdits } from "./PendingEdits";
 import { Picker } from "./picking/Picker";
@@ -23,7 +23,7 @@ export class KSEngine {
   private renderer: WebGPURenderer;
   private rig: CameraRig;
   private scene: Scene;
-  private map: MapPlane;
+  private table: MapTable;
   private pawns: PawnLayer;
   private picker: Picker;
   private keymap: Keymap;
@@ -44,8 +44,10 @@ export class KSEngine {
   private resizeObserver: ResizeObserver;
   private unsubscribe: () => void;
   private disposed = false;
-  /** Whether the camera has been put on the table since a map image arrived. */
-  private framedMap = false;
+  /** Whether the camera has been put on the table since the first map arrived. */
+  private framedTable = false;
+  /** Whether the renderer is up, and so whether the table may fetch its images yet. */
+  private ready = false;
   private lastFrameTime: number | null = null;
 
   constructor(
@@ -66,13 +68,23 @@ export class KSEngine {
     this.keymap = new Keymap(store.getState().bindings);
     this.rig = new CameraRig(canvas, store.getState().cameraMode, this.keymap);
     this.rig.camera.layers.enable(OVERLAY_LAYER);
-    this.rig.frameMap(MAP_WIDTH, BLANK_MAP_DEPTH);
+    this.rig.frameArea(BLANK_TABLE);
 
     this.scene = new Scene();
     // Anisotropy is read when a texture loads, since the renderer can only answer for it
     // once it has initialised.
-    this.map = new MapPlane(() => this.renderer.getMaxAnisotropy());
-    this.scene.add(this.map.object);
+    this.table = new MapTable(
+      () => this.renderer.getMaxAnisotropy(),
+      // An image that will not load leaves a blank sheet, which looks exactly like a command
+      // that never arrived, so it has to say so itself.
+      (asset, error) =>
+        this.store
+          .getState()
+          .setNotice(
+            `Map image ${asset} could not be loaded: ${error instanceof Error ? error.message : error}`,
+          ),
+    );
+    this.scene.add(this.table.group);
 
     const sun = new DirectionalLight(0xffffff, 3);
     sun.position.set(-40, 80, 60);
@@ -116,9 +128,7 @@ export class KSEngine {
         // This board answers every pending edit no gesture is still holding.
         this.pending.settle();
         this.refresh();
-      }
-      if (state.board.mapImage !== previous.board.mapImage) {
-        void this.showMap(state.board.mapImage);
+        this.syncMaps();
       }
       if (
         state.board !== previous.board ||
@@ -136,7 +146,8 @@ export class KSEngine {
   async init() {
     await this.renderer.init();
     if (this.disposed) return;
-    await this.showMap(this.store.getState().board.mapImage);
+    this.ready = true;
+    this.syncMaps();
   }
 
   dispose() {
@@ -146,7 +157,7 @@ export class KSEngine {
     this.tools.dispose();
     this.keys.dispose();
     this.rig.dispose();
-    this.map.dispose();
+    this.table.dispose();
     this.pawns.dispose();
     this.marquee.dispose();
     this.resizeObserver.disconnect();
@@ -214,26 +225,19 @@ export class KSEngine {
   }
 
   /**
-   * Put the board's map image on the table. The camera is framed on it the first time a map
-   * arrives; later changes leave the camera where the umpire put it.
+   * Draw the maps the board has laid on the table. The camera is framed on them the first
+   * time any arrive; later changes leave the camera where the umpire put it.
+   *
+   * Each map carries its own extent, so the table is the right shape, and can be framed,
+   * without waiting for a single image to load.
    */
-  private async showMap(id: string | null) {
-    try {
-      const depth = await this.map.show(id);
-      if (this.disposed) return;
-      if (id !== null && !this.framedMap) {
-        this.framedMap = true;
-        this.rig.frameMap(MAP_WIDTH, depth);
-      }
-    } catch (error) {
-      // An image that will not load leaves the table blank, which looks exactly like a
-      // command that never arrived, so it has to say so itself.
-      if (this.disposed) return;
-      this.store
-        .getState()
-        .setNotice(
-          `Map image ${id} could not be loaded: ${error instanceof Error ? error.message : error}`,
-        );
+  private syncMaps() {
+    if (!this.ready) return;
+    const maps = this.store.getState().board.maps;
+    this.table.sync(maps);
+    if (maps.length > 0 && !this.framedTable) {
+      this.framedTable = true;
+      this.rig.frameArea(this.table.area());
     }
   }
 }

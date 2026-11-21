@@ -39,8 +39,10 @@ use crate::{
 pub const SAVE_MIME: &str = "application/vnd.kriegsspiel+zip";
 
 /// The format this build writes. [`unpack`] refuses a file from a newer build rather than
-/// loading it with the parts it does not understand silently dropped.
-pub const FORMAT: u32 = 1;
+/// loading it with the parts it does not understand silently dropped, and still reads every
+/// older one: format 1 held a single map image per board, which [`SavedBoard`] turns into
+/// the one-map table it described.
+pub const FORMAT: u32 = 2;
 
 /// The largest save file the server accepts, which has to hold several images at
 /// [`MAX_ASSET_BYTES`] each.
@@ -62,14 +64,60 @@ const ASSETS_DIR: &str = "assets/";
 #[serde(rename_all = "camelCase")]
 pub struct Manifest {
     pub format: u32,
-    pub board: Board,
+    pub board: SavedBoard,
     #[serde(default)]
-    pub turns: Vec<Turn>,
+    pub turns: Vec<SavedTurn>,
     /// Asset id to what the archive holds under it. Written so that a reader can list the
     /// images without decoding them; the bytes remain the truth, and [`unpack`] reads each
     /// image's own header rather than trusting these.
     #[serde(default)]
     pub assets: BTreeMap<AssetId, AssetInfo>,
+}
+
+/// A board as a save file holds it: the board this build knows, plus the fields older
+/// formats used to carry. Reading a save is the one place those have to be understood, which
+/// is why they live here and not in [`Board`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedBoard {
+    #[serde(flatten)]
+    pub board: Board,
+    /// Format 1 laid one image on the table and kept no extent for it, because every client
+    /// worked the shape out from the image. Read into `maps` by [`SavedBoard::into_board`];
+    /// never written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_image: Option<AssetId>,
+}
+
+impl SavedBoard {
+    /// The board as this build holds it. A format 1 map image becomes the table's one map,
+    /// sized from the image itself, so an old save opens looking as it did.
+    fn into_board(mut self, assets: &AssetStore) -> Result<Board, SaveError> {
+        if let Some(asset) = self.map_image.take() {
+            let image = assets.get(&asset).ok_or_else(|| SaveError::MissingAsset {
+                id: asset.clone(),
+            })?;
+            self.board.add_map(asset, (image.width, image.height));
+        }
+        Ok(self.board)
+    }
+}
+
+impl From<&Board> for SavedBoard {
+    fn from(board: &Board) -> Self {
+        Self {
+            board: board.clone(),
+            map_image: None,
+        }
+    }
+}
+
+/// One recorded turn as a save file holds it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedTurn {
+    pub board: SavedBoard,
+    pub recorded_at: u64,
 }
 
 /// One image, as the manifest describes it.
@@ -155,8 +203,14 @@ pub fn pack(board: &Board, turns: &[Turn], assets: &AssetStore) -> Result<Vec<u8
     // unzips a save finds the document at the top.
     let mut manifest = Manifest {
         format: FORMAT,
-        board: board.clone(),
-        turns: turns.to_vec(),
+        board: board.into(),
+        turns: turns
+            .iter()
+            .map(|turn| SavedTurn {
+                board: (&turn.board).into(),
+                recorded_at: turn.recorded_at,
+            })
+            .collect(),
         assets: BTreeMap::new(),
     };
     let mut entries: Vec<(String, Bytes)> = Vec::new();
@@ -257,9 +311,20 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
         }
     }
 
+    // The images are in the store by now, which is what an older format's board is brought
+    // up to date from: it is the images themselves that say what shape a map is.
     let mut doc = Doc::default();
-    doc.board = manifest.board;
-    doc.turns = manifest.turns;
+    doc.board = manifest.board.into_board(&assets)?;
+    doc.turns = manifest
+        .turns
+        .into_iter()
+        .map(|turn| {
+            Ok(Turn {
+                board: turn.board.into_board(&assets)?,
+                recorded_at: turn.recorded_at,
+            })
+        })
+        .collect::<Result<Vec<_>, SaveError>>()?;
 
     for id in referenced(&doc.board, &doc.turns) {
         if !assets.contains(&id) {
@@ -297,14 +362,14 @@ mod tests {
         model::{Side, UnitKind},
     };
 
-    /// A game with two units, a map image, and one recorded turn.
+    /// A game with two units, a map on the table, and one recorded turn.
     fn saved_game() -> (Doc, AssetStore) {
         let mut assets = AssetStore::default();
         let map = assets.insert(test_png(4096, 2867)).unwrap();
         let badge = assets.insert(test_png(64, 64)).unwrap();
 
         let mut doc = Doc::default();
-        doc.board.map_image = Some(map);
+        doc.board.add_map(map, (4096, 2867));
         let id = doc.board.spawn(UnitKind::Infantry, Side::Blue, [1.0, 2.0]);
         doc.board.spawn(UnitKind::Cavalry, Side::Red, [3.0, 4.0]);
         doc.board.unit_mut(id).unwrap().pawn.image = Some(badge);
@@ -359,7 +424,13 @@ mod tests {
         assert_eq!(json["format"], FORMAT);
         assert_eq!(json["board"]["pawns"][0]["kind"], "Infantry");
         assert_eq!(json["turns"][0]["recordedAt"], 1_700_000_000_000u64);
-        let map = doc.board.map_image.as_ref().unwrap();
+        let map = &doc.board.maps[0].asset;
+        assert_eq!(json["board"]["maps"][0]["asset"].as_str(), Some(map.as_str()));
+        assert_eq!(json["board"]["maps"][0]["size"][0], 100.0);
+        assert!(
+            json["board"].get("mapImage").is_none(),
+            "a format 1 field is read, never written"
+        );
         assert_eq!(json["assets"][map]["mime"], "image/png");
         assert_eq!(json["assets"][map]["width"], 4096);
         assert_eq!(json["assets"][map]["path"], format!("assets/{map}.png"));
@@ -391,8 +462,8 @@ mod tests {
     #[test]
     fn a_save_leaves_out_images_nothing_uses() {
         let (mut doc, assets) = saved_game();
-        let replaced = doc.board.map_image.take();
-        assert!(replaced.is_some());
+        assert_eq!(doc.board.maps.len(), 1);
+        doc.board.maps.clear();
         // The recorded turn still holds the map, so it must still be saved.
         let file = pack(&doc.board, &doc.turns, &assets).unwrap();
         let (_, back) = unpack(&file).unwrap();
@@ -462,14 +533,14 @@ mod tests {
     fn a_manifest_that_does_not_match_its_images_is_refused() {
         let (doc, assets) = saved_game();
         let file = pack(&doc.board, &doc.turns, &assets).unwrap();
-        let map = doc.board.map_image.clone().unwrap();
+        let map = doc.board.maps[0].asset.clone();
 
         // An entry filed under an id that is not the hash of its bytes.
         let swapped = repack_manifest(&file, |json| {
             let mut entry = json["assets"][&map].clone();
             entry["path"] = serde_json::json!(format!("{ASSETS_DIR}{map}.png"));
             json["assets"] = serde_json::json!({ "0".repeat(64): entry });
-            json["board"]["mapImage"] = serde_json::json!("0".repeat(64));
+            json["board"]["maps"][0]["asset"] = serde_json::json!("0".repeat(64));
         });
         assert!(matches!(
             unpack(&swapped).unwrap_err(),
@@ -478,12 +549,54 @@ mod tests {
 
         // A board that names an image the file does not hold.
         let dangling = repack_manifest(&file, |json| {
-            json["board"]["mapImage"] = serde_json::json!("1".repeat(64));
+            json["board"]["maps"][0]["asset"] = serde_json::json!("1".repeat(64));
         });
         match unpack(&dangling).unwrap_err() {
             SaveError::MissingAsset { id } => assert_eq!(id, "1".repeat(64)),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_format_1_save_loads_with_its_one_map_image_laid_on_the_table() {
+        let (doc, assets) = saved_game();
+        let file = pack(&doc.board, &doc.turns, &assets).unwrap();
+        let map = doc.board.maps[0].asset.clone();
+
+        // What this build wrote before boards could hold several maps: one `mapImage` per
+        // board, with no place or extent of its own.
+        let old = repack_manifest(&file, |json| {
+            json["format"] = serde_json::json!(1);
+            let old_board = |board: &mut serde_json::Value| {
+                // No `maps` at all, as a board written by that build had none.
+                board
+                    .as_object_mut()
+                    .expect("a board is a JSON object")
+                    .remove("maps");
+                board["mapImage"] = serde_json::json!(map);
+            };
+            old_board(&mut json["board"]);
+            old_board(&mut json["turns"][0]["board"]);
+        });
+
+        let (back, _) = unpack(&old).unwrap();
+        for board in [&back.board, &back.turns[0].board] {
+            assert_eq!(board.maps.len(), 1);
+            assert_eq!(board.maps[0].asset, map);
+            // 4096 x 2867 pixels, read from the image in the file rather than the manifest.
+            assert_eq!(board.maps[0].pos, [0.0, 0.0]);
+            assert_eq!(board.maps[0].size[0], 100.0);
+            assert!((board.maps[0].size[1] - 100.0 * 2867.0 / 4096.0).abs() < 1e-4);
+        }
+
+        // A format 1 board naming an image the file does not hold is refused, like any other.
+        let dangling = repack_manifest(&old, |json| {
+            json["board"]["mapImage"] = serde_json::json!("1".repeat(64));
+        });
+        assert!(matches!(
+            unpack(&dangling).unwrap_err(),
+            SaveError::MissingAsset { .. }
+        ));
     }
 
     #[test]

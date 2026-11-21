@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { loadGame, saveGame, setMapImage, setUnitImage } from "../net/assets";
+import {
+  addMap,
+  loadGame,
+  removeMaps,
+  saveGame,
+  setUnitImage,
+} from "../net/assets";
 import { SAVE_EXTENSION, SAVE_MIME } from "../protocol";
 import { useClientStore } from "../state/store";
 import styles from "./FileBar.module.css";
@@ -13,14 +19,16 @@ const REPLACE_WARNING =
   "Load this save? It replaces the board, the recorded turns and the history for everyone connected.";
 
 /**
- * Files in and out: lay a map image on the table, put an image on the selected units, and
- * save or open a game.
+ * Files in and out: lay map images on the table, put an image on the selected units, and
+ * save or open a game. The maps on the table are listed, since any number may be down at
+ * once and a sheet laid by mistake has to be removable without undoing other work.
  *
  * None of this unpacks or builds a file here. The server owns the document and the images,
  * so it is the only thing that can write a consistent save; the client asks for the bytes,
  * or hands it the bytes it was given, and waits for the board that comes back.
  */
 export function FileBar() {
+  const maps = useClientStore((s) => s.board.maps);
   const selection = useClientStore((s) => s.selection);
   const viewing = useClientStore((s) => s.viewing);
   const notice = useClientStore((s) => s.notice);
@@ -70,7 +78,7 @@ export function FileBar() {
       const file = event.dataTransfer?.files[0];
       if (!file) return;
       if (file.type.startsWith("image/")) {
-        if (!readOnly) void run("Map image", () => setMapImage(file));
+        if (!readOnly) void run("Add map", () => addMap(file));
       } else {
         openSave(file);
       }
@@ -87,11 +95,11 @@ export function FileBar() {
     <div className={styles.filebar} role="group" aria-label="Files">
       <div className={styles.row}>
         <FilePicker
-          label="Map image"
-          title="Lay an image on the table"
+          label="Add map"
+          title="Lay an image on the table, beside any already down"
           accept={IMAGE_TYPES}
           disabled={busy || readOnly}
-          onPick={(file) => run("Map image", () => setMapImage(file))}
+          onPick={(file) => run("Add map", () => addMap(file))}
         />
         <FilePicker
           label="Unit image"
@@ -124,6 +132,31 @@ export function FileBar() {
           onPick={openSave}
         />
       </div>
+
+      {maps.length > 0 && (
+        <ul className={styles.maps} aria-label="Maps on the table">
+          {maps.map((map, index) => (
+            <li key={map.id} className={styles.map}>
+              {/* Numbered by where it sits in the stack, which is what the board says and
+                  what the umpire sees: the last one laid is on top. */}
+              <span>Map {index + 1}</span>
+              <span className={styles.size}>
+                {Math.round(map.size[0])} × {Math.round(map.size[1])}
+              </span>
+              <button
+                type="button"
+                className={styles.remove}
+                title="Take this map off the table"
+                aria-label={`Take map ${index + 1} off the table`}
+                disabled={busy || readOnly}
+                onClick={() => removeMaps([map.id])}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {notice && (
         <button

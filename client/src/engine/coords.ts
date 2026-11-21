@@ -25,6 +25,18 @@ export interface ScreenBox {
 /** A point on the map plane, as [world X, world Z]. */
 export type TablePoint = [number, number];
 
+/**
+ * A rectangle of the table in world units: where it is and how far it reaches. What the
+ * maps cover, which is what the camera is framed on.
+ */
+export interface TableArea {
+  centre: TablePoint;
+  /** Along world X. */
+  width: number;
+  /** Along world Z. */
+  depth: number;
+}
+
 /** The client-coordinate point a pointer event happened at. */
 export function screenPointOf(event: PointerEvent): ScreenPoint {
   return { x: event.clientX, y: event.clientY };

@@ -3,18 +3,25 @@
 
 import type { Board } from "./bindings/model";
 
-export type { Board, Pawn, Side, Unit, UnitKind } from "./bindings/model";
+export type {
+  Board,
+  MapImage,
+  Pawn,
+  Side,
+  Unit,
+  UnitKind,
+} from "./bindings/model";
 
 /** Match `MIN_SCALE` and `MAX_SCALE` in `crates/server/src/model.rs`. */
 export const MIN_SCALE = 0.25;
 export const MAX_SCALE = 4;
 
 /**
- * An empty table: no map image, so the engine draws the blank default plane until an umpire
- * lays one down. `mapImage` is an asset id the server serves, never a bundled file.
+ * An empty table: no maps, so the engine draws the blank default plane until an umpire lays
+ * one down. Each map names an asset id the server serves, never a bundled file.
  */
 export const EMPTY_BOARD: Board = {
-  mapImage: null,
+  maps: [],
   pawns: [],
   nextId: 0,
 };

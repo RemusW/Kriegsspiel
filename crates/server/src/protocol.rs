@@ -104,12 +104,18 @@ pub enum ClientMessage {
     /// Copy the turn this umpire is viewing into the live board, as one undoable edit, and
     /// return them to the live board.
     RestoreTurn,
-    /// Lay a stored image on the table, or clear it with `null`. The image must already be in
-    /// the store: upload the bytes first, then send this with the id. An id the store does
-    /// not hold is refused, so the board can never name an image a save would not find.
-    SetMapImage {
-        asset: Option<String>,
-    },
+    /// Lay a stored image on the table as a new map, beside the maps already there. Several
+    /// may be down at once, so this adds one rather than replacing what is there.
+    ///
+    /// The image must already be in the store: upload the bytes first, then send this with
+    /// the id. An id the store does not hold is refused, so the board can never name an
+    /// image a save would not find. The server, which is the only side that knows the
+    /// image's pixel size, gives the new map its place and its extent, in the image's own
+    /// aspect ratio.
+    AddMap { asset: String },
+    /// Take these maps off the table. One command for the lot, so it is one undo step; ids
+    /// that are no longer on the table are skipped.
+    RemoveMaps { maps: Vec<u64> },
     /// Put a stored image on these units' top faces, or `null` to go back to the generated
     /// symbol. One command for the whole selection, so it is one undo step.
     SetUnitImage {

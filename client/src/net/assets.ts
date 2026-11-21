@@ -40,10 +40,19 @@ export async function uploadImage(file: File): Promise<string> {
   return id;
 }
 
-/** Lay an image on the table: upload it, then point the board at it. */
-export async function setMapImage(file: File): Promise<void> {
+/**
+ * Lay an image on the table as a new map: upload it, then put it on the board. Several maps
+ * may be down at once, so this adds one beside the others rather than replacing them.
+ */
+export async function addMap(file: File): Promise<void> {
   const asset = await uploadImage(file);
-  serverConnection.send({ type: "setMapImage", asset });
+  serverConnection.send({ type: "addMap", asset });
+}
+
+/** Take maps off the table. No bytes travel, so this is a plain command. */
+export function removeMaps(maps: readonly number[]): void {
+  if (maps.length === 0) return;
+  serverConnection.send({ type: "removeMaps", maps: [...maps] });
 }
 
 /** Put an image on the top face of these units. */
