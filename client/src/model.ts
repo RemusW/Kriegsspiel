@@ -11,6 +11,7 @@ export type {
   Unit,
   UnitKind,
 } from "./bindings/model";
+export type { AssetId } from "./bindings/assets";
 
 /** Match `MIN_SCALE` and `MAX_SCALE` in `crates/server/src/model.rs`. */
 export const MIN_SCALE = 0.25;

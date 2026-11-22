@@ -13,7 +13,9 @@
 use std::{collections::HashMap, fmt};
 
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use ts_rs::TS;
 
 /// The largest single image the server accepts.
 pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
@@ -22,7 +24,86 @@ pub const MAX_ASSET_BYTES: usize = 64 * 1024 * 1024;
 const ID_LENGTH: usize = 64;
 
 /// An image id: the lowercase hex SHA-256 of the image's bytes.
-pub type AssetId = String;
+///
+/// Made only by hashing bytes or by checking a string from outside, including when one is
+/// deserialized, so holding an `AssetId` means the string has that shape and is safe to use
+/// as a key or a file name. Whether the store holds the image is a separate question.
+// Serde is implemented by hand below rather than with `#[serde(try_from)]`, which ts-rs does
+// not understand and warns about on every build.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, TS)]
+#[ts(export, export_to = "assets.ts", type = "string")]
+pub struct AssetId(String);
+
+impl Serialize for AssetId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for AssetId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let id = String::deserialize(deserializer)?;
+        Self::try_from(id).map_err(serde::de::Error::custom)
+    }
+}
+
+impl AssetId {
+    /// The id of these bytes. Clients compute the same id with `crypto.subtle.digest`, so this
+    /// must stay plain SHA-256 of the file as uploaded.
+    pub fn of(bytes: &[u8]) -> Self {
+        let digest = Sha256::digest(bytes);
+        let mut id = String::with_capacity(ID_LENGTH);
+        for byte in digest.iter() {
+            // Hex digits, two per byte, without pulling in a hex crate.
+            id.push(char::from_digit((byte >> 4) as u32, 16).expect("a nibble is a hex digit"));
+            id.push(char::from_digit((byte & 0xf) as u32, 16).expect("a nibble is a hex digit"));
+        }
+        Self(id)
+    }
+
+    /// An id from outside, if it has the shape of one.
+    pub fn parse(id: &str) -> Option<Self> {
+        let valid = id.len() == ID_LENGTH
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        valid.then(|| Self(id.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AssetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl TryFrom<String> for AssetId {
+    type Error = NotAnAssetId;
+
+    fn try_from(id: String) -> Result<Self, NotAnAssetId> {
+        Self::parse(&id).ok_or(NotAnAssetId)
+    }
+}
+
+impl From<AssetId> for String {
+    fn from(id: AssetId) -> Self {
+        id.0
+    }
+}
+
+/// A string that is not 64 lowercase hex digits, offered as an asset id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotAnAssetId;
+
+impl fmt::Display for NotAnAssetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "not an asset id: expected {ID_LENGTH} lowercase hex digits")
+    }
+}
 
 /// An image format the store accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,7 +172,7 @@ impl Asset {
             return Err(AssetError::TooLarge { bytes: bytes.len() });
         }
         let (kind, width, height) = probe(&bytes)?;
-        let id = asset_id(&bytes);
+        let id = AssetId::of(&bytes);
         Ok((
             id,
             Asset {
@@ -126,11 +207,11 @@ impl AssetStore {
         self.by_id.entry(id).or_insert(asset);
     }
 
-    pub fn get(&self, id: &str) -> Option<&Asset> {
+    pub fn get(&self, id: &AssetId) -> Option<&Asset> {
         self.by_id.get(id)
     }
 
-    pub fn contains(&self, id: &str) -> bool {
+    pub fn contains(&self, id: &AssetId) -> bool {
         self.by_id.contains_key(id)
     }
 
@@ -141,29 +222,6 @@ impl AssetStore {
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
-}
-
-/// The id of these bytes: their SHA-256 as lowercase hex. Clients compute the same id with
-/// `crypto.subtle.digest`, so this must stay plain SHA-256 of the file as uploaded.
-pub fn asset_id(bytes: &[u8]) -> AssetId {
-    let digest = Sha256::digest(bytes);
-    let mut id = String::with_capacity(ID_LENGTH);
-    for byte in digest.iter() {
-        // Hex digits, two per byte, without pulling in a hex crate.
-        id.push(char::from_digit((byte >> 4) as u32, 16).expect("a nibble is a hex digit"));
-        id.push(char::from_digit((byte & 0xf) as u32, 16).expect("a nibble is a hex digit"));
-    }
-    id
-}
-
-/// Whether this string could be an asset id. Checked before an id from outside is used to
-/// look anything up, so that ids can later name files on disk without a traversal to worry
-/// about.
-pub fn is_asset_id(id: &str) -> bool {
-    id.len() == ID_LENGTH
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// What an image's header says it is: format, width and height.
@@ -275,25 +333,36 @@ mod tests {
         // The published digests of these inputs, so a change of hash cannot pass unnoticed:
         // clients compute this id themselves.
         assert_eq!(
-            asset_id(b""),
+            AssetId::of(b"").as_str(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(
-            asset_id(b"abc"),
+            AssetId::of(b"abc").as_str(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 
     #[test]
     fn ids_are_recognised() {
-        assert!(is_asset_id(&asset_id(b"anything")));
-        assert!(!is_asset_id(""));
-        assert!(!is_asset_id(&"a".repeat(63)));
-        assert!(
-            !is_asset_id(&"A".repeat(64)),
+        let id = AssetId::of(b"anything");
+        assert_eq!(AssetId::parse(id.as_str()), Some(id));
+        assert_eq!(AssetId::parse(""), None);
+        assert_eq!(AssetId::parse(&"a".repeat(63)), None);
+        assert_eq!(
+            AssetId::parse(&"A".repeat(64)),
+            None,
             "uppercase is not the hex an id is written in"
         );
-        assert!(!is_asset_id(&"../".repeat(21)));
+        assert_eq!(AssetId::parse(&"../".repeat(21)), None);
+    }
+
+    #[test]
+    fn an_id_is_checked_when_deserialized() {
+        let id = AssetId::of(b"anything");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, format!("\"{id}\""), "on the wire it is a plain string");
+        assert_eq!(serde_json::from_str::<AssetId>(&json).unwrap(), id);
+        assert!(serde_json::from_str::<AssetId>(r#""../../etc/passwd""#).is_err());
     }
 
     #[test]

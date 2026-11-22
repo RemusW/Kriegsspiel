@@ -32,7 +32,7 @@ use bytes::Bytes;
 use tokio::sync::{RwLock, watch};
 use tower_http::cors::{Any, CorsLayer};
 
-use assets::{Asset, AssetId, AssetStore, is_asset_id};
+use assets::{Asset, AssetId, AssetStore};
 use model::{Doc, MAX_SCALE, MIN_SCALE, Side, Step, UmpireId, UnitKind};
 use protocol::{ClientMessage, Placement, ServerMessage, TurnInfo};
 use save::{MAX_SAVE_BYTES, SAVE_MIME, SaveError};
@@ -301,7 +301,7 @@ fn any_map_on_board(doc: &Doc, ids: &[u64]) -> bool {
 /// The pixel size of a stored image, which is what a new map's extent is worked out from.
 /// `None` for an image that was never uploaded, which refuses the command for the reason
 /// [`known_asset`] gives.
-fn asset_pixels(assets: &AssetStore, asset: &str) -> Option<(u32, u32)> {
+fn asset_pixels(assets: &AssetStore, asset: &AssetId) -> Option<(u32, u32)> {
     match assets.get(asset) {
         Some(image) => Some((image.width, image.height)),
         None => {
@@ -317,8 +317,8 @@ fn asset_pixels(assets: &AssetStore, asset: &str) -> Option<(u32, u32)> {
 ///
 /// A refusal is logged because a snapshot cannot carry a reason: until commands have request
 /// ids and replies of their own, the server's own output is the only place this is visible.
-fn known_asset(assets: &AssetStore, asset: &Option<String>) -> bool {
-    match asset.as_deref() {
+fn known_asset(assets: &AssetStore, asset: &Option<AssetId>) -> bool {
+    match asset {
         None => true,
         Some(id) if assets.contains(id) => true,
         Some(id) => {
@@ -399,9 +399,9 @@ fn cors() -> CorsLayer {
 /// Serve one image. The id is the hash of the bytes, so a URL can never come to mean a
 /// different image and the browser may keep it for good.
 async fn asset(Path(id): Path<String>, State(game): State<Game>) -> Response {
-    if !is_asset_id(&id) {
+    let Some(id) = AssetId::parse(&id) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     // Cloned out of the store so the lock is released before the bytes are written to the
     // socket; `Asset` holds its bytes behind a refcount, so this copies nothing.
     let Some(asset) = game.assets.read().await.get(&id).cloned() else {
@@ -885,7 +885,7 @@ mod tests {
         let mut store = AssetStore::default();
         let map = store.insert(test_png(2048, 1024)).unwrap();
 
-        let add = |asset: &String| ClientMessage::AddMap {
+        let add = |asset: &AssetId| ClientMessage::AddMap {
             asset: asset.clone(),
         };
         let effect = super::apply(&mut doc, &store, 0, add(&map));
@@ -926,7 +926,7 @@ mod tests {
     fn an_image_the_store_does_not_hold_is_refused() {
         let mut doc = two_units();
         let store = AssetStore::default();
-        let stranger = assets::asset_id(b"never uploaded");
+        let stranger = AssetId::of(b"never uploaded");
 
         let map = ClientMessage::AddMap {
             asset: stranger.clone(),
@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn image_commands_parse_from_client_json() {
         let parse = |json: &str| serde_json::from_str::<ClientMessage>(json).unwrap();
-        let id = "a".repeat(64);
+        let id = AssetId::parse(&"a".repeat(64)).unwrap();
         assert_eq!(
             parse(&format!(r#"{{"type":"addMap","asset":"{id}"}}"#)),
             ClientMessage::AddMap { asset: id.clone() }

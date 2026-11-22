@@ -4,7 +4,10 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::model::{Board, Side, Turn, UnitKind};
+use crate::{
+    assets::AssetId,
+    model::{Board, Side, Turn, UnitKind},
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -112,7 +115,7 @@ pub enum ClientMessage {
     /// image a save would not find. The server, which is the only side that knows the
     /// image's pixel size, gives the new map its place and its extent, in the image's own
     /// aspect ratio.
-    AddMap { asset: String },
+    AddMap { asset: AssetId },
     /// Take these maps off the table. One command for the lot, so it is one undo step; ids
     /// that are no longer on the table are skipped.
     RemoveMaps { maps: Vec<u64> },
@@ -120,6 +123,6 @@ pub enum ClientMessage {
     /// symbol. One command for the whole selection, so it is one undo step.
     SetUnitImage {
         units: Vec<u64>,
-        asset: Option<String>,
+        asset: Option<AssetId>,
     },
 }

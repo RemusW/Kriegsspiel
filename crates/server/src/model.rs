@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::assets::AssetId;
+
 /// Undo steps kept per umpire.
 const UNDO_LIMIT: usize = 200;
 
@@ -58,8 +60,8 @@ pub enum Side {
 pub struct MapImage {
     /// Stable across snapshots, from the same counter as the units', and never reused.
     pub id: u64,
-    /// Asset id of the image. Never `None`, unlike a unit's: a map is its image.
-    pub asset: String,
+    /// The image. Never `None`, unlike a unit's: a map is its image.
+    pub asset: AssetId,
     /// Centre of the sheet on the table (world X, world Z).
     pub pos: [f32; 2],
     /// Extent of the sheet (world X, world Z). Only the server sets it, from the pixel size
@@ -77,8 +79,8 @@ pub struct Pawn {
     /// Rotation around the vertical axis, in radians.
     pub rot: f32,
     pub scale: f32,
-    /// Asset id of a custom top-face image. `None` uses the generated symbol.
-    pub image: Option<String>,
+    /// A custom top-face image. `None` uses the generated symbol.
+    pub image: Option<AssetId>,
 }
 
 /// A unit on the board. Its pawn fields sit at the top level of its JSON.
@@ -135,7 +137,7 @@ impl Board {
     ///
     /// The sheet goes east of every map already down, clear of them all: a sheet dropped on
     /// top of another would be invisible, and nothing moves maps yet.
-    pub fn add_map(&mut self, asset: String, pixels: (u32, u32)) -> u64 {
+    pub fn add_map(&mut self, asset: AssetId, pixels: (u32, u32)) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         // A zero dimension never reaches here, since the store refuses such an image, but
@@ -173,14 +175,13 @@ impl Board {
         self.pawns.iter_mut().find(|unit| unit.id == id)
     }
 
-    /// Every asset id this board names: each map's image, and any unit's top-face image.
-    /// What a save file has to carry, and what may not be thrown away while this board
-    /// exists.
-    pub fn images(&self) -> impl Iterator<Item = &str> {
+    /// Every image this board names: each map's, and any unit's top-face image. What a save
+    /// file has to carry, and what may not be thrown away while this board exists.
+    pub fn images(&self) -> impl Iterator<Item = &AssetId> {
         self.maps
             .iter()
-            .map(|map| map.asset.as_str())
-            .chain(self.pawns.iter().filter_map(|unit| unit.pawn.image.as_deref()))
+            .map(|map| &map.asset)
+            .chain(self.pawns.iter().filter_map(|unit| unit.pawn.image.as_ref()))
     }
 }
 
@@ -562,6 +563,11 @@ mod tests {
     const A: UmpireId = 1;
     const B: UmpireId = 2;
 
+    /// A stand-in image id, distinct per name.
+    fn image(name: &str) -> AssetId {
+        AssetId::of(name.as_bytes())
+    }
+
     /// A document with units 0 and 1, placed outside any umpire's history.
     fn two_units() -> Doc {
         let mut doc = Doc::default();
@@ -763,12 +769,12 @@ mod tests {
     #[test]
     fn a_new_map_keeps_its_image_s_shape_and_stays_clear_of_the_others() {
         let mut board = Board::default();
-        board.add_map("wide".into(), (4000, 2000));
+        board.add_map(image("wide"), (4000, 2000));
         assert_eq!(board.maps[0].size, [NEW_MAP_WIDTH, NEW_MAP_WIDTH / 2.0]);
         assert_eq!(board.maps[0].pos, [0.0, 0.0], "the first map is centred");
 
         // A portrait sheet beside it: taller than wide, and east of the first with a gap.
-        board.add_map("tall".into(), (500, 1000));
+        board.add_map(image("tall"), (500, 1000));
         assert_eq!(board.maps[1].size, [NEW_MAP_WIDTH, NEW_MAP_WIDTH * 2.0]);
         let gap = board.maps[1].pos[0]
             - board.maps[1].size[0] / 2.0
@@ -780,9 +786,9 @@ mod tests {
     #[test]
     fn maps_and_units_are_given_ids_from_one_counter() {
         let mut board = Board::default();
-        let first = board.add_map("map".into(), (10, 10));
+        let first = board.add_map(image("map"), (10, 10));
         let unit = board.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
-        let second = board.add_map("map".into(), (10, 10));
+        let second = board.add_map(image("map"), (10, 10));
         assert_eq!([first, unit, second], [0, 1, 2]);
     }
 
@@ -790,10 +796,10 @@ mod tests {
     fn laying_a_map_down_and_taking_it_off_are_undoable() {
         let mut doc = Doc::default();
         doc.edit(A, |b| {
-            b.add_map("first".into(), (100, 100));
+            b.add_map(image("first"), (100, 100));
         });
         doc.edit(A, |b| {
-            b.add_map("second".into(), (100, 100));
+            b.add_map(image("second"), (100, 100));
         });
         let id = doc.board.maps[0].id;
 
@@ -807,9 +813,9 @@ mod tests {
             doc.board
                 .maps
                 .iter()
-                .map(|m| m.asset.as_str())
+                .map(|m| &m.asset)
                 .collect::<Vec<_>>(),
-            ["first", "second"]
+            [&image("first"), &image("second")]
         );
 
         assert_eq!(doc.undo(A), Step::Applied);
@@ -817,14 +823,14 @@ mod tests {
         assert_eq!(doc.undo(A), Step::Applied);
         assert!(doc.board.maps.is_empty(), "and so is the first");
         assert_eq!(doc.redo(A), Step::Applied);
-        assert_eq!(doc.board.maps[0].asset, "first");
+        assert_eq!(doc.board.maps[0].asset, image("first"));
     }
 
     #[test]
     fn undoing_a_map_skips_what_another_umpire_moved_since() {
         let mut doc = Doc::default();
         doc.edit(A, |b| {
-            b.add_map("map".into(), (100, 100));
+            b.add_map(image("map"), (100, 100));
         });
         doc.edit(B, |b| b.maps[0].pos = [25.0, 0.0]);
 
@@ -837,11 +843,11 @@ mod tests {
     #[test]
     fn board_json_uses_client_field_names() {
         let mut board = Board::default();
-        board.add_map("map-1".into(), (200, 100));
+        board.add_map(image("map-1"), (200, 100));
         board.spawn(UnitKind::Infantry, Side::Blue, [3.0, -4.5]);
 
         let json = serde_json::to_value(&board).unwrap();
-        assert_eq!(json["maps"][0]["asset"], "map-1");
+        assert_eq!(json["maps"][0]["asset"], image("map-1").as_str());
         assert_eq!(json["maps"][0]["size"][1], NEW_MAP_WIDTH / 2.0);
         assert_eq!(json["nextId"], 2);
         assert_eq!(json["pawns"][0]["kind"], "Infantry");

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    assets::{AssetError, AssetId, AssetStore, MAX_ASSET_BYTES, is_asset_id},
+    assets::{AssetError, AssetId, AssetStore, MAX_ASSET_BYTES},
     model::{Board, Doc, Turn},
 };
 
@@ -283,8 +283,9 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
 
     let mut assets = AssetStore::default();
     for (id, info) in &manifest.assets {
-        // An id from a file is used to look an entry up and could later name a file on disk.
-        if !is_asset_id(id) || !info.path.starts_with(ASSETS_DIR) {
+        // The id's shape was checked as the manifest was read; the path is the archive's own
+        // claim, so it must at least stay inside the images folder.
+        if !info.path.starts_with(ASSETS_DIR) {
             return Err(SaveError::BadAsset { id: id.clone() });
         }
         let mut entry = zip
@@ -340,7 +341,7 @@ fn referenced(board: &Board, turns: &[Turn]) -> BTreeSet<AssetId> {
     let boards = std::iter::once(board).chain(turns.iter().map(|turn| &turn.board));
     boards
         .flat_map(Board::images)
-        .map(ToOwned::to_owned)
+        .cloned()
         .collect()
 }
 
@@ -431,9 +432,9 @@ mod tests {
             json["board"].get("mapImage").is_none(),
             "a format 1 field is read, never written"
         );
-        assert_eq!(json["assets"][map]["mime"], "image/png");
-        assert_eq!(json["assets"][map]["width"], 4096);
-        assert_eq!(json["assets"][map]["path"], format!("assets/{map}.png"));
+        assert_eq!(json["assets"][map.as_str()]["mime"], "image/png");
+        assert_eq!(json["assets"][map.as_str()]["width"], 4096);
+        assert_eq!(json["assets"][map.as_str()]["path"], format!("assets/{map}.png"));
     }
 
     #[test]
@@ -537,7 +538,7 @@ mod tests {
 
         // An entry filed under an id that is not the hash of its bytes.
         let swapped = repack_manifest(&file, |json| {
-            let mut entry = json["assets"][&map].clone();
+            let mut entry = json["assets"][map.as_str()].clone();
             entry["path"] = serde_json::json!(format!("{ASSETS_DIR}{map}.png"));
             json["assets"] = serde_json::json!({ "0".repeat(64): entry });
             json["board"]["maps"][0]["asset"] = serde_json::json!("0".repeat(64));
@@ -552,7 +553,7 @@ mod tests {
             json["board"]["maps"][0]["asset"] = serde_json::json!("1".repeat(64));
         });
         match unpack(&dangling).unwrap_err() {
-            SaveError::MissingAsset { id } => assert_eq!(id, "1".repeat(64)),
+            SaveError::MissingAsset { id } => assert_eq!(id.as_str(), "1".repeat(64)),
             other => panic!("{other:?}"),
         }
     }
