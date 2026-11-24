@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Client's Lie</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0003 &middot; Kriegsspiel network model</p>
+  <h1>The client's lie</h1>
+  <p class="standfirst">Only the server moves units. Yet the piece follows your mouse with no
+  delay at all. The client is showing you something that has not happened &mdash; and the
+  engineering is not in telling the lie, it is in guaranteeing it can never get stuck.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="3">
+      <p class="prompt">Why does the watch channel carry no data?</p>
+      <ul class="options">
+        <li>Unit types cannot cross a channel</li>
+        <li>Sending data would block the writer</li>
+        <li>No one board suits every client</li>
+        <li>The document lock forbids holding it</li>
+      </ul>
+      <p class="why">Umpires view different turns, and players will get filtered boards, so
+      there is nothing correct to put in one shared message. Doorbell, not delivery. Each
+      connection then builds its own view from <code>doc.shown(umpire)</code>.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">Why does <code>send_view</code> drop the lock before writing?</p>
+      <ul class="options">
+        <li>Writes need a mutable document borrow</li>
+        <li>A stalled client would freeze everyone</li>
+        <li>Snapshots must be built while unlocked</li>
+        <li>The watch channel reacquires it later</li>
+      </ul>
+      <p class="why">A socket write to a stalled client can block for a long time. Holding a
+      read lock through it stops any writer taking the document, so nobody can edit until
+      that one client's network recovers. The other reason to read everything under
+      <em>one</em> lock is that the board and the <code>viewing</code> index that labels it
+      cannot then disagree.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>The problem, in one number</h2>
+
+  <p class="with-note">A few hundred milliseconds through the relay. Now consider what your
+  own architecture rules insist on: <em>every edit goes through <code>Doc::edit</code> on the
+  server</em>, and <em>there is no client-side <code>Doc</code></em>. Taken literally, the
+  honest client is this: you drag a piece, nothing happens, and 300 ms later the piece
+  arrives where you left off.</p>
+  <p class="note">300 ms is an estimate in <code>CLAUDE.md</code>, never measured. It is also
+  roughly 18 frames at 60 Hz, which is a useful way to feel it: the piece would be the better
+  part of a third of a second behind your hand, continuously, for the whole drag.</p>
+
+  <p>That is unusable, and notice it is unusable only for <em>some</em> operations. Recording
+  a turn can take 300 ms and nobody minds. Dragging cannot. The dividing line is whether the
+  action is <strong>continuous and hand-guided</strong>: anything tracking a pointer has to be
+  immediate, because the feedback loop is your own proprioception and you will notice tens of
+  milliseconds.</p>
+
+  <p>So one of the two rules has to bend. The one that bends is <em>not</em> server
+  authority &mdash; it is the assumption that the screen shows the board.</p>
+
+  <div class="callout">
+    <span class="label">The rule that replaces it</span>
+    <p>What is on screen is the board <strong>plus the edits this client has asked for and
+    not yet seen come back</strong>. Drawing, picking, and the values a new edit builds on all
+    read the units <em>as drawn</em> &mdash; never <code>board.pawns</code>, which lags the
+    screen by a round trip.</p>
+  </div>
+
+  <h2><span class="n">02</span>What the textbook does, and what you did instead</h2>
+
+  <p>The standard reference for this problem is Gabriel Gambetta's, and it is worth knowing
+  precisely because <strong>your solution is not the one he describes</strong>. Being able to
+  say why is the valuable part.</p>
+
+  <p>His setting is a player running around a simulated world. The client
+  &ldquo;<em>predict[s] what the game state will be after the server has processed the
+  inputs</em>&rdquo;, which works &ldquo;<em>because the game world is
+  deterministic</em>&rdquo;. Reconciling that prediction then needs real machinery:</p>
+
+  <blockquote>
+    <p>&ldquo;First, the client adds a sequence number to each request&hellip; Then, when the
+    server replies, it includes the sequence number of the last input it processed.&rdquo;
+    The client adopts the server's state and re-applies &ldquo;all the input still not seen by
+    the server.&rdquo;</p>
+    <cite><a href="https://gabrielgambetta.com/client-side-prediction-server-reconciliation.html">Gabriel
+    Gambetta, Client-Side Prediction and Server Reconciliation</a></cite>
+  </blockquote>
+
+  <p>Sequence numbers, a saved queue of unacknowledged inputs, and a re-simulation on every
+  server update. <code>PendingEdits.ts</code> is 60 lines and has none of that. The reason is
+  two design choices you already made, probably without framing them this way.</p>
+
+  <h3>One: commands are absolute, not inputs</h3>
+
+  <p class="with-note">Gambetta's client sends <em>inputs</em> &mdash; "held right for 16 ms"
+  &mdash; which only mean something when a simulation integrates them, in order, from a known
+  starting state. Miss one, or apply them out of order, and the result is wrong. Hence
+  sequence numbers.</p>
+  <p class="note">The doc comment on <code>Placement</code> already says this: "Every value
+  is absolute, so a command states the result it wants instead of how far a pointer or key
+  moved it." That sentence is the reason this lesson is short.</p>
+
+  <p>Your client sends a <em>result</em>: <code>Placement { id, pos, rot, scale }</code>.
+  Absolute. Which means the client is not predicting anything &mdash; it already knows the
+  exact value it asked for, because it chose it. There is nothing to re-derive when the
+  answer comes back.</p>
+
+  <h3>Two: there is no simulation to be out of step with</h3>
+
+  <p>The server does not integrate physics. It validates and assigns. So the server's result
+  is not an <em>approximation</em> of the client's guess that might drift &mdash; given a
+  command that is accepted, it is byte-identical to what the client drew. Divergence is not a
+  spectrum here; it is binary. Either the command was applied, or it was refused.</p>
+
+  <div class="callout">
+    <span class="label">Name it correctly</span>
+    <p>This is an <strong>optimistic update</strong>, not client-side prediction. The client
+    shows the result it has asked for, on the assumption that permission will be granted.
+    Reconciliation is therefore not a re-simulation. It is one sentence:
+    <em>stop lying when the truth arrives.</em></p>
+  </div>
+
+  <h2><span class="n">03</span>The whole mechanism</h2>
+
+  <p>Three methods carry it. <code>hold</code> starts showing an edit, <code>settle</code>
+  stops, and <code>applyTo</code> is the overlay itself:</p>
+
+<pre><code><span class="c">/** These units as they are drawn. The same array comes back when nothing is pending. */</span>
+applyTo(units: readonly Unit[]): readonly Unit[] {
+  <span class="k">if</span> (this.edits.size === 0) <span class="k">return</span> units;
+  <span class="k">return</span> units.map((unit) =&gt; {
+    <span class="k">const</span> edit = this.edits.get(unit.id);
+    <span class="k">return</span> edit ? { ...unit, ...edit } : unit;
+  });
+}</code></pre>
+  <p class="srcline">client/src/engine/PendingEdits.ts</p>
+
+  <p class="with-note">A field-level overlay, not a replacement: <code>previewOf</code> copies
+  only the fields a <code>Placement</code> actually carries, so a turn-only manipulation
+  overrides <code>rot</code> and leaves <code>pos</code> reading from the board. If it
+  replaced whole units, a board arriving mid-turn with someone else's position change for
+  that unit would be discarded.</p>
+  <p class="note">Returning the identical array when nothing is pending is not a micro-
+  optimisation &mdash; it keeps referential equality, so subscribers comparing by identity see
+  no change. Same discipline as <code>sameTurns</code> in the store.</p>
+
+  <p>And one line wires it to the server's boards:</p>
+
+<pre><code><span class="k">if</span> (state.board !== previous.board) {
+  <span class="c">// This board answers every pending edit no gesture is still holding.</span>
+  this.pending.settle();
+  this.refresh();
+  this.syncMaps();
+}</code></pre>
+  <p class="srcline">client/src/engine/KriegsspielEngine.ts:127&ndash;131</p>
+
+  <figure class="wide">
+    <svg viewBox="0 0 560 215" role="img" aria-label="Timeline of a drag with and without pending edits">
+      <text class="dtitle" x="0" y="12">With PendingEdits</text>
+      <line class="dline" x1="40" y1="24" x2="520" y2="24"/>
+      <rect class="dfill" x="40" y="30" width="150" height="13" rx="2"/>
+      <text class="dlabel" x="48" y="40" style="fill:var(--accent)">drag: hold() every move</text>
+      <path class="dhot" d="M190 24 L190 20"/>
+      <text class="dlabel" x="196" y="19">pointer up &rarr; send place</text>
+      <path class="ddash" d="M190 49 L420 49"/>
+      <text class="dlabel" x="236" y="60">~300 ms in flight &mdash; screen already correct</text>
+      <path class="dhot" d="M420 24 L420 20"/>
+      <text class="dlabel" x="426" y="19">board arrives</text>
+      <rect class="dfill" x="420" y="30" width="100" height="13" rx="2"/>
+      <text class="dlabel" x="428" y="40" style="fill:var(--accent)">settle()</text>
+      <text class="dlabel" x="40" y="78">the piece never leaves your pointer; the board catches up invisibly</text>
+
+      <text class="dtitle" x="0" y="118">Without</text>
+      <line class="dline" x1="40" y1="130" x2="520" y2="130"/>
+      <rect class="dbox" x="40" y="136" width="150" height="13" rx="2"/>
+      <text class="dlabel" x="48" y="146">drag: nothing moves</text>
+      <path class="dhot" d="M190 130 L190 126"/>
+      <text class="dlabel" x="196" y="125">pointer up &rarr; send place</text>
+      <path class="ddash" d="M190 155 L420 155"/>
+      <text class="dlabel" x="250" y="166">~300 ms of nothing happening</text>
+      <path class="dhot" d="M420 130 L420 126"/>
+      <text class="dlabel" x="426" y="125">piece jumps</text>
+      <text class="dlabel" x="40" y="184">and a second drag inside that window measures from the old position,</text>
+      <text class="dlabel" x="40" y="196">so it silently undoes the first</text>
+    </svg>
+    <figcaption>The bottom lane is not merely laggy. It is <em>wrong</em>: see section 5.</figcaption>
+  </figure>
+
+  <h2><span class="n">04</span>The invariant, and the four ways it could break</h2>
+
+  <p>A pending edit is a claim about the future. If one ever gets stuck, that unit is drawn
+  somewhere it is not, for ever, and every subsequent edit is measured from a fiction. So the
+  invariant is absolute:</p>
+
+  <blockquote>
+    <p>Every pending edit is removed, in bounded time, whatever happens.</p>
+  </blockquote>
+
+  <p>There are exactly four ways that could fail, and each is closed by a line or two. This
+  is the part to be able to recite.</p>
+
+  <ol class="steps">
+    <li class="hot"><strong>The server refuses the command.</strong> An off-map position, a
+    bad scale, an id that no longer exists &mdash; or the umpire is viewing a recorded turn.
+    Nothing changes on the board, so no board would be sent, so <code>settle()</code> never
+    runs and the lie is permanent.
+    <p>Closed on the <em>server</em>, by lesson 2's <code>Effect::Me</code>: a refusal still
+    sends that umpire a board. That is what the enum value is <em>for</em>. The client needs
+    no refusal-handling code at all, which is why you will not find any.</p></li>
+
+    <li class="hot"><strong>The command is never sent.</strong> The socket is down.
+    <code>ServerConnection.send</code> returns <code>false</code> rather than queueing, on
+    purpose: "replaying commands after a reconnect could apply them to a board that has
+    changed since."</p>
+<pre><code>} <span class="k">else if</span> (this.host.send(this.placements())) {
+  this.host.releasePreview();   <span class="c">// sent: the edit stands until a board answers it</span>
+} <span class="k">else</span> {
+  this.host.discardPreview();   <span class="c">// not sent: nothing will ever answer it</span>
+}</code></pre>
+    <p class="srcline">client/src/engine/Manipulation.ts, <code>leave()</code></p>
+    <p>The return value of <code>send</code> is load-bearing. Ignore it and a drag made while
+    disconnected sticks for ever.</p></li>
+
+    <li><strong>Nothing actually changed.</strong> A click, or a drag that ends where it
+    began. <code>isIdentity()</code> discards the preview and sends no command at all &mdash;
+    which also keeps empty undo steps out of the umpire's history.</li>
+
+    <li class="hot"><strong>Someone else's board arrives mid-drag.</strong> The nasty one.
+    Another umpire edits a different unit; their board reaches you while your drag is still
+    under way; <code>settle()</code> runs and clears <em>your</em> in-flight edit, so the
+    piece you are holding snaps back to the pointer's starting position.
+    <p>Closed by the <code>held</code> set: <code>settle()</code> deletes every pending edit
+    <em>except</em> the ones a running gesture is holding. <code>release()</code> hands them
+    over once the command is sent, and they settle on the next board like any other.</p></li>
+  </ol>
+
+  <p>Four states, and the whole lifecycle of a pending edit is their transitions:
+  <code>hold</code> &rarr; (<code>discard</code> | <code>release</code> &rarr;
+  <code>settle</code>). There is no fifth path, which is the actual proof that the lie cannot
+  stick.</p>
+
+  <h2><span class="n">05</span>The failure that makes this non-optional</h2>
+
+  <p class="with-note">It would be easy to read all of the above as a polish feature &mdash;
+  the piece looks nicer following the mouse. It is not. Look at where a manipulation gets its
+  starting values:</p>
+  <p class="note">"The units as drawn when the manipulation began." <code>this.shown</code>,
+  which is <code>pending.applyTo(board.pawns)</code>. Not <code>board.pawns</code>.</p>
+
+<pre><code><span class="k">const</span> starts = this.shown.filter((unit) =&gt; selected.has(unit.id));</code></pre>
+  <p class="srcline">client/src/engine/KriegsspielEngine.ts:196</p>
+
+  <p>Suppose it read <code>board.pawns</code> instead. Drag a unit 10 m east and let go. Now,
+  inside the same 300 ms, drag it 10 m north. The second manipulation starts from the board,
+  which still has the unit at its <em>original</em> position, and sends "put it 10 m north of
+  where it started" &mdash; absolute, remember. The east move is silently erased. Two
+  deliberate edits, one survives.</p>
+
+  <p>The same bug in picking: click where a piece visibly <em>is</em> mid-flight and, reading
+  the board, you select whatever used to be there. This is why the rule names all three
+  consumers &mdash; drawn, picked, <em>and</em> measured from. Getting two of the three right
+  is the bug that is hardest to find.</p>
+
+  <div class="callout">
+    <span class="label">Worth noticing</span>
+    <p><code>PawnLayer</code>'s springs are a <em>fourth</em> thing, and deliberately not in
+    this list. Blocks lag their units visually, lean into a drag, bounce on landing &mdash;
+    and picking and edits ignore all of it, using exact positions. So there are three layers
+    of truth on screen: the board, the board plus pending, and the springs' rendering of it.
+    Only the middle one is ever picked against or measured from.</p>
+  </div>
+
+  <h2><span class="n">06</span>Recall</h2>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="4">
+      <p class="prompt">Why does this client need no sequence numbers?</p>
+      <ul class="options">
+        <li>The socket cannot reorder messages</li>
+        <li>Only one command is outstanding</li>
+        <li>The server replies to each command</li>
+        <li>Commands carry absolute values</li>
+      </ul>
+      <p class="why">A <code>place</code> states the result, not an input to be integrated, so
+      there is no simulation to replay and nothing to re-derive from acknowledged inputs.
+      Ordering does hold, but it is not the reason; a delta-based command would need sequence
+      numbers even over an ordered socket, because the client would have to know which deltas
+      the server had folded in.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">What clears a pending edit after a refused command?</p>
+      <ul class="options">
+        <li>The board that a refusal sends</li>
+        <li>A timeout in the pending edits</li>
+        <li>An error message from the server</li>
+        <li>The next successful command sent</li>
+      </ul>
+      <p class="why"><code>Effect::Me</code>: a refusal still sends that umpire a board, and
+      any board runs <code>settle()</code>. There is no timeout and no refusal message &mdash;
+      the client has no refusal-handling path, by design. Note what is still missing: the
+      umpire learns the edit did not happen, but never <em>why</em>.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Why does a running gesture keep its own pending edits?</p>
+      <ul class="options">
+        <li>Its edits are not yet complete</li>
+        <li>Gestures may send several commands</li>
+        <li>Another board would clear them</li>
+        <li>The server has not seen them</li>
+      </ul>
+      <p class="why">Any board arriving triggers <code>settle()</code>. Without the
+      <code>held</code> set, an unrelated edit by another umpire would clear the drag you are
+      in the middle of, snapping the piece back to where it started. The server has indeed not
+      seen them &mdash; but that is true of released edits too, and those settle normally.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">Why must a manipulation start from the units as drawn?</p>
+      <ul class="options">
+        <li>The board omits selected units</li>
+        <li>A second edit would erase the first</li>
+        <li>Drawn positions include spring motion</li>
+        <li>The board is read-only to tools</li>
+      </ul>
+      <p class="why">Commands are absolute, so an edit built on the stale board states a
+      result computed from the wrong starting point and silently reverts the edit still in
+      flight. Option 3 is a real distinction but the wrong way round: spring positions are
+      <em>excluded</em>, since picking and edits use exact values.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">What does the client do with a command it cannot send?</p>
+      <ul class="options">
+        <li>Queues it until reconnection happens</li>
+        <li>Retries it on a short timer</li>
+        <li>Drops it and discards the preview</li>
+        <li>Applies it to the stored board</li>
+      </ul>
+      <p class="why"><code>send</code> returns <code>false</code> and
+      <code>Manipulation.leave</code> calls <code>discardPreview()</code>. Deliberately not
+      queued: a replayed command carries absolute values computed against a board that may
+      have changed while you were disconnected, so replaying it could stamp on someone else's
+      work.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">07</span>Drill: the lie gets stuck</h2>
+
+  <p>In each case a unit ends up drawn somewhere it is not, permanently. Which change caused
+  it?</p>
+
+  <ol class="quiz" data-label="Drill">
+    <li class="q" data-answer="2">
+      <p class="prompt">A drag made while the connection is down leaves the piece floating at
+      the drop point for ever.</p>
+      <ul class="options">
+        <li><code>settle()</code> stopped sparing held edits</li>
+        <li>The result of <code>send</code> is ignored</li>
+        <li><code>previewOf</code> copied every field</li>
+        <li><code>applyTo</code> returned a new array</li>
+      </ul>
+      <p class="why">With nothing sent, no board will ever arrive to answer that edit, so
+      <code>release()</code> leaves it pending until the page is reloaded. The whole reason
+      <code>send</code> returns a boolean is to distinguish this from a successful send.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">The server refuses a scale of 9, and the unit stays drawn nine times
+      too large.</p>
+      <ul class="options">
+        <li>The client stopped validating scale</li>
+        <li>The gesture never called <code>release</code></li>
+        <li><code>applyTo</code> skipped unknown ids</li>
+        <li><code>apply</code> returned <code>Effect::None</code></li>
+      </ul>
+      <p class="why">A refusal must answer its sender. Return <code>None</code> instead of
+      <code>Me</code> and nothing is sent, so <code>settle()</code> never runs. This is the
+      coupling worth remembering: <strong>a client-side invariant enforced by a server-side
+      enum.</strong> Clamping on the client would hide it, not fix it.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">While one umpire drags, another umpire's unrelated edit makes the
+      dragged piece snap back to its origin.</p>
+      <ul class="options">
+        <li><code>settle()</code> cleared the held edits</li>
+        <li><code>hold()</code> replaced the edit map</li>
+        <li>The board arrived before the command</li>
+        <li><code>Effect::Everyone</code> woke the sender</li>
+      </ul>
+      <p class="why">Exactly the case the <code>held</code> set exists for. Note this one is
+      not permanent &mdash; it resolves when the drag ends &mdash; but it is the most
+      noticeable failure of the four, and it only appears with two umpires connected, which
+      is why it is easy to ship.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">08</span>Read this next</h2>
+
+  <p><a href="https://gabrielgambetta.com/client-side-prediction-server-reconciliation.html">Gabriel
+  Gambetta, <em>Client-Side Prediction and Server Reconciliation</em></a> &mdash; one page,
+  with live demos you can drag a slider on. Read it for the contrast: see how much machinery
+  the input-based version needs, and you will have the argument for absolute commands ready
+  the next time anyone asks why your protocol is not a stream of deltas.</p>
+
+  <p>Then <a href="https://gabrielgambetta.com/entity-interpolation.html">Part III, Entity
+  Interpolation</a>, which is about smoothing <em>other</em> people's movement. That is step
+  5 of your plan, and the one place your spring code and his problem genuinely meet.</p>
+
+  <h2 id="next"><span class="n">09</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong><a href="0004-who-are-you.html">Lesson 4 &mdash; who are you?</a></strong> Three lessons have now leaned on a
+    sentence we have not examined: <em>every connection is a new umpire</em>. Next: what
+    exactly is lost when a socket drops, why the reconnect in
+    <code>ServerConnection</code> deliberately replays nothing, why <code>/save</code> being readable
+    by any page that asks is a real hole and not a theoretical one, and what the cheapest
+    honest fix looks like.</p>
+    <p>To say out loud before then: <strong>"we use optimistic updates, not client-side
+    prediction"</strong> &mdash; and then give the two reasons that lets you skip the
+    sequence numbers.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> Loose ends I left deliberately: what <em>should</em> happen
+    when a command is refused and the umpire deserves to know why &mdash; this is the
+    <code>Step::Partial</code> gap, and it is the one piece of the model that is genuinely
+    unfinished rather than merely deferred; whether <code>PendingEdits</code> should hold
+    spawns and deletions too, which today it cannot, since it only overlays fields on units
+    the board already has; and the React question underneath all of it &mdash; why the
+    pending edits live in the engine rather than the Zustand store, when they are so obviously
+    "state".</p>
+  </div>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

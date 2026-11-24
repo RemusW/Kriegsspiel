@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Fan-Out</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0002 &middot; Kriegsspiel network model</p>
+  <h1>The fan-out</h1>
+  <p class="standfirst">One line of code wakes every connected umpire, and it sends them
+  nothing. Everything interesting about this server is in that sentence.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <p>Two from <a href="0001-why-a-socket.html">lesson 1</a>, before any new material. Answer
+  without opening it.</p>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="4">
+      <p class="prompt">Why can HTTP not do what this project needs?</p>
+      <ul class="options">
+        <li>Its headers are too large</li>
+        <li>It cannot carry binary data</li>
+        <li>It drops messages under load</li>
+        <li>The server cannot speak first</li>
+      </ul>
+      <p class="why">Client-initiated only. The server knows about the edit instantly and has
+      no channel to mention it. Everything else &mdash; header overhead, connection churn
+      &mdash; is a consequence of working around that one limitation with polling.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">What does a socket guarantee that this server spends?</p>
+      <ul class="options">
+        <li>Messages arrive in order</li>
+        <li>Messages arrive within deadline</li>
+        <li>Messages survive a disconnect</li>
+        <li>Messages are compressed first</li>
+      </ul>
+      <p class="why">One TCP connection, so order is preserved. It is spent on sending image
+      bytes and then immediately the <code>addMap</code> naming them, with no acknowledgement
+      in between. <strong>Nothing</strong> about timing is guaranteed, and nothing survives a
+      disconnect.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>The line, and the puzzle in it</h2>
+
+<pre><code>self.changed.send_replace(());</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:142</p>
+
+  <p class="with-note">That is the whole of the fan-out. Look at what it sends:
+  <code>()</code>. The unit type. <strong>No data.</strong> A channel that wakes every
+  connection and hands each one nothing at all.</p>
+  <p class="note">If your instinct is that a broadcast channel should carry the thing being
+  broadcast, hold onto that instinct for two minutes &mdash; it is exactly the assumption
+  this design rejects, and for a good reason.</p>
+
+  <p>So the question for this lesson is really two questions:</p>
+
+  <blockquote>
+    <p>Why does the channel carry nothing? And what does each connection <em>do</em> when
+    the doorbell rings?</p>
+  </blockquote>
+
+  <h2><span class="n">02</span>Why the channel carries nothing</h2>
+
+  <p>Because <strong>there is no single message that would be correct for everybody.</strong>
+  Two umpires connected to the same game can legitimately need different boards right now:</p>
+
+  <ul>
+    <li>Umpire A is editing the live board. Umpire B is looking at turn 3 from ten minutes
+    ago. Stepping turns is <em>per umpire</em> &mdash; <code>viewing</code> lives in
+    <code>Doc::umpires</code>, not on the board.</li>
+    <li>Later, a player joins. They must receive a board with the other side's hidden units
+    <em>absent</em>, not present-but-flagged. That is an architecture rule, not a
+    preference: <em>filter on the server</em>.</li>
+  </ul>
+
+  <p>Your own ADR says it in two sentences:</p>
+
+  <blockquote>
+    <p>&ldquo;Umpires viewing different turns, and later each side, see different boards, so
+    one shared broadcast cannot work. A watch channel keeps only the latest change, so a slow
+    client skips stale boards instead of queueing them.&rdquo;</p>
+    <cite>docs/adr/0021-each-connection-sends-its-own-snapshot.md</cite>
+  </blockquote>
+
+  <p>So the channel is a <strong>doorbell, not a delivery</strong>. It says
+  <em>something changed, go and look</em>. Each connection then builds its own view from the
+  document, under its own read lock, for its own umpire id.</p>
+
+  <figure class="wide">
+    <svg viewBox="0 0 560 230" role="img" aria-label="Fan-out from one command to three connections">
+      <rect class="dbox" x="0" y="20" width="110" height="34" rx="3"/>
+      <text class="dlabel" x="12" y="34">umpire A sends</text>
+      <text class="dlabel" x="12" y="46">place {...}</text>
+
+      <path class="dhot" d="M110 37 L170 37"/>
+      <path class="dhot" d="M163 33 L170 37 L163 41"/>
+
+      <rect class="dfill" x="170" y="14" width="120" height="46" rx="3"/>
+      <text class="dlabel" x="182" y="32" style="fill:var(--accent)">apply()</text>
+      <text class="dlabel" x="182" y="44">Doc::edit, validate</text>
+      <text class="dlabel" x="182" y="55">&rarr; Effect::Everyone</text>
+
+      <path class="dhot" d="M290 37 L350 37"/>
+      <path class="dhot" d="M343 33 L350 37 L343 41"/>
+
+      <rect class="dfill" x="350" y="20" width="140" height="34" rx="3"/>
+      <text class="dlabel" x="360" y="34" style="fill:var(--accent)">changed.send_replace(())</text>
+      <text class="dlabel" x="360" y="46">the doorbell</text>
+
+      <path class="dline" d="M420 54 L420 76"/>
+      <path class="dline" d="M420 76 L120 76 M420 76 L420 76 M420 76 L560 76"/>
+      <path class="dline" d="M120 76 L120 98 M300 76 L300 98 M480 76 L480 98"/>
+      <text class="dlabel" x="196" y="72">( ) &mdash; carries no data</text>
+
+      <rect class="dbox" x="55" y="98" width="130" height="62" rx="3"/>
+      <text class="dlabel" x="65" y="114">conn A &mdash; umpire 0</text>
+      <text class="dlabel" x="65" y="128">viewing: live</text>
+      <text class="dlabel" x="65" y="142">doc.shown(0)</text>
+      <text class="dlabel" x="65" y="155">&rarr; its own snapshot</text>
+
+      <rect class="dbox" x="235" y="98" width="130" height="62" rx="3"/>
+      <text class="dlabel" x="245" y="114">conn B &mdash; umpire 1</text>
+      <text class="dlabel" x="245" y="128">viewing: turn 3</text>
+      <text class="dlabel" x="245" y="142">doc.shown(1)</text>
+      <text class="dlabel" x="245" y="155">&rarr; a different board</text>
+
+      <rect class="dbox" x="415" y="98" width="130" height="62" rx="3"/>
+      <text class="dlabel" x="425" y="114">conn C &mdash; player</text>
+      <text class="dlabel" x="425" y="128">(not built yet)</text>
+      <text class="dlabel" x="425" y="142">filtered board</text>
+      <text class="dlabel" x="425" y="155">&rarr; less than the others</text>
+
+      <text class="dlabel" x="55" y="186">Three wake-ups, three different messages, built</text>
+      <text class="dlabel" x="55" y="198">independently. Conn A is woken too: that is how the</text>
+      <text class="dlabel" x="55" y="210">umpire who sent the command gets their own board back.</text>
+    </svg>
+    <figcaption>The channel's job ends at the dotted line. Everything below it happens once
+    per connection, in its own task, holding its own read lock.</figcaption>
+  </figure>
+
+  <p class="with-note">The second half of that ADR sentence is the part people miss.
+  <code>watch</code> is, in tokio's words, &ldquo;<em>a multi-producer, multi-consumer channel
+  that only retains the last sent value</em>&rdquo;. Ring the doorbell five times while a
+  connection is busy writing to a slow socket and it finds <strong>one</strong> pending
+  notification, not five. It then sends one snapshot reflecting all five changes.</p>
+  <p class="note">Tokio spells out the same property for <code>wait_for</code>: &ldquo;<em>the
+  watch channel only keeps track of the most recent value, so if several messages are sent
+  faster than <code>wait_for</code> is able to call the closure, then it may skip some
+  updates.</em>&rdquo; For most channels that would be data loss. Here it is the whole
+  point.</p>
+
+  <div class="callout">
+    <span class="label">The property worth naming</span>
+    <p><strong>Coalescing.</strong> A queue would make a slow client a growing memory
+    liability and deliver it a backlog of boards that are already wrong. A watch channel
+    makes a slow client simply <em>skip frames</em>. You already know this trade-off: it is
+    the difference between queueing every input event and sampling the input state once per
+    frame.</p>
+    <p>Note which side of the connection this protects: the <em>server</em>. The browser's
+    WebSocket API has no equivalent &mdash; that is still an open exposure from lesson 1.</p>
+  </div>
+
+  <h2><span class="n">03</span>What a connection does when the doorbell rings</h2>
+
+  <p>Each connection is one <code>client()</code> task. Stripped to its skeleton:</p>
+
+<pre><code><span class="k">async fn</span> client(<span class="k">mut</span> socket: WebSocket, game: Game) {
+    <span class="k">let</span> umpire = game.next_umpire.fetch_add(1, Ordering::Relaxed);
+    <span class="c">// Subscribe before the first send, so a change made in between still wakes this loop.</span>
+    <span class="k">let mut</span> changed = game.changed.subscribe();
+    <span class="k">if</span> game.send_view(&amp;<span class="k">mut</span> socket, umpire).await.is_err() { <span class="k">return</span>; }
+    <span class="k">loop</span> {
+        tokio::select! {
+            message = socket.recv() =&gt; <span class="c">/* apply it, maybe reply */</span>,
+            Ok(()) = changed.changed() =&gt; <span class="c">/* send this umpire's view */</span>,
+        }
+    }
+}</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:461&ndash;505</p>
+
+  <p>Four things are happening there and each one is a decision.</p>
+
+  <ol class="steps">
+    <li><strong>An id per connection.</strong> Covered in lesson 1, and the reason this
+    task can ask the document for <em>its</em> view rather than <em>the</em> view.</li>
+
+    <li class="hot"><strong>Subscribe, then send.</strong> In that order, and the comment
+    tells you why. A <code>watch::Receiver</code> only hears changes made after it
+    subscribed. Reverse these two lines and you open a window: build the snapshot, someone
+    else edits the board, <em>then</em> you subscribe &mdash; and that edit is never
+    delivered to this client, which now shows a stale board until the next unrelated change
+    happens to come along. A bug that appears only under concurrency, only sometimes, and
+    only for one client.</li>
+
+    <li><strong>Send the first snapshot unprompted.</strong> Before the loop. The client
+    asked for nothing; it gets the whole board the moment it connects. This is also the
+    reconnection path &mdash; there is no separate "resync" message, because a fresh
+    connection and a reconnection are literally the same code.</li>
+
+    <li class="hot"><strong>Then wait on two things at once, for ever.</strong> That is
+    <code>tokio::select!</code>, and it is the part worth slowing down for.</li>
+  </ol>
+
+  <h2><span class="n">04</span><code>select!</code>, and the trap underneath it</h2>
+
+  <p>Tokio's own one-line description:</p>
+
+  <blockquote>
+    <p>&ldquo;Waits on multiple concurrent branches, returning when the first branch
+    completes, <strong>cancelling the remaining branches</strong>.&rdquo;</p>
+    <cite><a href="https://docs.rs/tokio/latest/tokio/macro.select.html">tokio::select!</a></cite>
+  </blockquote>
+
+  <p class="with-note">Read the emphasis again. Every time your client's message arrives, the
+  half-finished <code>changed.changed()</code> future is <strong>thrown away</strong>. Every
+  time the board changes, the half-finished <code>socket.recv()</code> is thrown away. Around
+  the loop you go, and both are created fresh. In a busy game this happens thousands of
+  times.</p>
+  <p class="note">A detail worth knowing because it will confuse you in a debugger:
+  &ldquo;<em>by default, <code>select!</code> randomly picks a branch to check
+  first</em>&rdquo;. Deliberate &mdash; it stops one always-ready branch from starving the
+  other. So the order you wrote the branches in is not the order they are polled.</p>
+
+  <p>So: is throwing away a half-polled future safe? That depends entirely on
+  <em>where the progress was being kept</em>, and tokio gives this a name.</p>
+
+  <blockquote>
+    <p>&ldquo;Cancellation safety describes what happens when a future is dropped before it
+    completes&hellip; If you have a future that has not yet completed, then it must be a
+    no-op to drop that future and recreate it.&rdquo;</p>
+    <cite><a href="https://docs.rs/tokio/latest/tokio/macro.select.html#cancellation-safety">tokio::select!,
+    Cancellation safety</a></cite>
+  </blockquote>
+
+  <p>The rule in one sentence, and it is the transferable idea of this lesson:</p>
+
+  <div class="callout">
+    <span class="label">The rule</span>
+    <p>If a future's progress lives <strong>in the future</strong>, dropping it loses that
+    progress. If the progress lives <strong>in the object the future borrows</strong>,
+    dropping it costs nothing.</p>
+    <p>Tokio's not-cancel-safe list is exactly the methods that accumulate into themselves:
+    <code>read_exact</code>, <code>read_to_end</code>, <code>write_all</code>. Half a
+    message read into a buffer that is about to be dropped is half a message gone &mdash; and
+    tokio notes these &ldquo;<em>can lead to loss of data</em>&rdquo;. A partial read is
+    not an error anybody reports. It is a corrupted stream, later.</p>
+  </div>
+
+  <h3>Now prove it for these two branches</h3>
+
+  <p><strong>Branch 2, <code>changed.changed()</code>.</strong> Documented outright:</p>
+
+  <blockquote>
+    <p>&ldquo;This method is cancel safe. If you use it as a branch in
+    <code>tokio::select!</code> and another branch completes first, then it is guaranteed that
+    no values have been marked seen by this call to <code>changed</code>.&rdquo;</p>
+    <cite><a href="https://docs.rs/tokio/latest/tokio/sync/watch/struct.Receiver.html#method.changed">watch::Receiver::changed</a></cite>
+  </blockquote>
+
+  <p>That last clause is the mechanism: "seen" is tracked on the <em>receiver</em>, not in
+  the future. Drop the future and the receiver has not moved.</p>
+
+  <p class="with-note"><strong>Branch 1, <code>socket.recv()</code>.</strong> Here is the
+  interesting bit: <em>axum does not document cancel safety for it.</em> Its docs say only
+  &ldquo;Receive another message. Returns <code>None</code> if the stream has closed.&rdquo;
+  So you have to work it out. Three lines of axum's source settle it:</p>
+  <p class="note">This is a skill, not a lookup. Most async libraries do not state cancel
+  safety. You check: where does the state live? If the answer is "in the object", you are
+  fine.</p>
+
+<pre><code><span class="k">pub async fn</span> recv(&amp;<span class="k">mut</span> self) -&gt; Option&lt;Result&lt;Message, Error&gt;&gt; {
+    self.next().await
+}
+<span class="c">// ...and WebSocket implements Stream, whose poll_next drives self.inner.</span></code></pre>
+  <p class="srcline">axum-0.8.9/src/extract/ws.rs:555 and :580</p>
+
+  <p>So <code>recv()</code> is just <code>Stream::next()</code>, and
+  <code>Stream::next</code> appears on tokio's <em>cancel-safe</em> list. The reason is the
+  rule above: <code>next()</code> holds nothing but a mutable borrow of the stream; every
+  byte of partially-framed message state lives in <code>self.inner</code>, which outlives the
+  future. Drop it mid-poll, recreate it next time round the loop, and not a byte is lost.</p>
+
+  <p><strong>Both branches are cancel-safe, so the loop is correct.</strong> You can now say
+  that with a reason, which is a different thing from having written it and seen it work.</p>
+
+  <h2><span class="n">05</span>Three decisions hiding in plain sight</h2>
+
+  <h3><code>send_replace</code>, not <code>send</code></h3>
+
+  <p class="with-note">They differ in one way that matters: <code>send</code>
+  &ldquo;<em>fails if the channel is closed, which is the case when every receiver has been
+  dropped</em>&rdquo;, whereas <code>send_replace</code> &ldquo;<em>permits sending values
+  even when there are no receivers</em>&rdquo;. Loading a save over
+  <code>POST /load</code> with nobody connected is a perfectly ordinary thing to do, and it
+  should not produce an error to handle.</p>
+  <p class="note">The other half of the comment at lib.rs:140: it &ldquo;wakes this connection
+  too, which is how the sender gets its own board&rdquo;. There is no special case for the
+  umpire who made the edit. They are just another subscriber.</p>
+
+  <h3><code>Effect::Me</code> deliberately bypasses the channel</h3>
+
+<pre><code><span class="k">if</span> game.receive(umpire, &amp;text).await == Effect::Me
+    &amp;&amp; game.send_view(&amp;<span class="k">mut</span> socket, umpire).await.is_err()
+{ <span class="k">break</span>; }</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:475&ndash;479</p>
+
+  <p>Stepping turns, or having a command refused, changes what <em>one</em> umpire should
+  see. Pushing that through the watch channel would wake every other connection to rebuild
+  and resend a board that has not changed &mdash; work and bandwidth for nothing. So the
+  three values of <code>Effect</code> map onto three delivery routes:
+  <code>None</code> &rarr; nobody, <code>Me</code> &rarr; this socket directly,
+  <code>Everyone</code> &rarr; the doorbell.</p>
+
+  <h3>The lock is released before the socket write</h3>
+
+<pre><code><span class="k">let</span> snapshot = {
+    <span class="k">let</span> doc = self.doc.read().await;
+    ServerMessage::Snapshot { board: doc.shown(umpire).clone(), <span class="c">/* ... */</span> }
+};  <span class="c">// &lt;- guard dropped here, before the await below</span>
+send(socket, &amp;snapshot).await</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:152&ndash;166</p>
+
+  <p class="with-note">Two separate reasons, both worth being able to state. <strong>One:</strong>
+  everything the snapshot needs is read under a <em>single</em> lock, so the board and the
+  <code>viewing</code> index that labels it cannot disagree &mdash; no interleaved edit can
+  land between reading one and reading the other. <strong>Two:</strong> the write to the
+  socket happens with no lock held, because an umpire on hotel wifi must not be able to stall
+  everybody else's edits. A held lock across an <code>await</code> on a network write is the
+  classic way to turn one slow client into a frozen server.</p>
+  <p class="note">The clone is the price. Roughly 20 KB per board at 200 units, per
+  connection, per change &mdash; an estimate in your own ADR, never measured. Sending
+  per-unit differences instead is the planned fix, and the reason to do it is this clone, not
+  the bandwidth.</p>
+
+  <h2><span class="n">06</span>Recall</h2>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="2">
+      <p class="prompt">Why does the watch channel carry no data?</p>
+      <ul class="options">
+        <li>Boards are too large to send</li>
+        <li>No single board suits everyone</li>
+        <li>Channels cannot carry large structs</li>
+        <li>It would need another lock</li>
+      </ul>
+      <p class="why">Umpires view different turns, and players will see filtered boards. There
+      is nothing correct to put in one shared message, so the channel only says
+      <em>something changed</em> and each connection builds its own view. Size is a separate
+      concern and not the reason.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">What happens when the doorbell rings five times rapidly?</p>
+      <ul class="options">
+        <li>Five snapshots queue per client</li>
+        <li>The slowest receiver blocks senders</li>
+        <li>A slow client sees one wake-up</li>
+        <li>The oldest four are retried later</li>
+      </ul>
+      <p class="why"><code>watch</code> &ldquo;only retains the last sent value&rdquo;, so
+      notifications coalesce. A slow client skips stale boards rather than queueing them
+      &mdash; it drops frames. Nothing blocks the sender, and nothing is retried.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">Why must <code>subscribe()</code> come before the first snapshot?</p>
+      <ul class="options">
+        <li>A change between them would be missed</li>
+        <li>The receiver count gates the send</li>
+        <li>Subscribing needs the document lock</li>
+        <li>The first snapshot marks values seen</li>
+      </ul>
+      <p class="why">A receiver only hears changes made after it subscribed. Reversed, an edit
+      landing in the gap is never delivered to this client, which then shows a stale board
+      until some unrelated change arrives. Concurrency-only, intermittent, single-client: the
+      worst kind of bug.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">What makes <code>socket.recv()</code> safe to cancel?</p>
+      <ul class="options">
+        <li>Axum documents it as cancel-safe</li>
+        <li>The socket buffers unread frames</li>
+        <li>Tokio restarts the dropped future</li>
+        <li>Its state lives in the stream</li>
+      </ul>
+      <p class="why"><code>recv</code> is <code>self.next().await</code>, and the future holds
+      only a borrow &mdash; all framing state is in the stream, which outlives it. Note option
+      1 is false: axum documents nothing of the kind, which is why you had to read the
+      source.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">Why is <code>Effect::Me</code> not sent through the channel?</p>
+      <ul class="options">
+        <li>The sender cannot receive its own</li>
+        <li>Others would rebuild boards needlessly</li>
+        <li>Refusals must arrive before snapshots</li>
+        <li>The channel only wakes idle tasks</li>
+      </ul>
+      <p class="why">Only one umpire's view changed, so waking every connection would have
+      them all lock the document, clone a board and write it to a socket for no reason. Option
+      1 is the opposite of true &mdash; the sender <em>is</em> woken by the channel for
+      <code>Everyone</code>, and that is how it gets its own board.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">07</span>Drill: what breaks?</h2>
+
+  <p>The real test of understanding a mechanism is predicting its failure. For each change,
+  pick the consequence.</p>
+
+  <ol class="quiz" data-label="Drill">
+    <li class="q" data-answer="3">
+      <p class="prompt">The document read lock is held across the socket write in
+      <code>send_view</code>.</p>
+      <ul class="options">
+        <li>Snapshots can disagree with their labels</li>
+        <li>The connection misses later changes</li>
+        <li>One slow client freezes every umpire</li>
+        <li>Boards arrive in the wrong order</li>
+      </ul>
+      <p class="why">A write to a stalled socket can block for a long time. Holding a read
+      lock through it stops any writer taking the document, so no umpire anywhere can edit
+      until that one client's network recovers. This is the single nastiest mistake available
+      in this file.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">The two <code>select!</code> branches become a sequential
+      <code>await</code> chain: receive a message, then wait for a change.</p>
+      <ul class="options">
+        <li>Changes only arrive after the client speaks</li>
+        <li>Both branches lose their cancel safety</li>
+        <li>The watch receiver stops coalescing</li>
+        <li>Commands are applied twice each</li>
+      </ul>
+      <p class="why">The whole point of <code>select!</code> is waiting on both at once. In
+      sequence, an idle client &mdash; one whose umpire is just watching &mdash; sits blocked
+      on <code>recv()</code> and never reaches the <code>changed()</code> await, so it sees
+      nothing until it happens to send something. Which is polling, reinvented.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">A branch is added that calls <code>read_to_end</code> on an upload
+      instead of taking one binary frame.</p>
+      <ul class="options">
+        <li>Uploads become ordered after commands</li>
+        <li>The frame size limit stops applying</li>
+        <li>Image hashing moves onto the async worker</li>
+        <li>A cancelled read silently loses bytes</li>
+      </ul>
+      <p class="why"><code>read_to_end</code> is on tokio's not-cancel-safe list: it
+      accumulates into a buffer held <em>by the future</em>. The other branch firing drops
+      that buffer mid-read. Tokio's phrasing is &ldquo;can lead to loss of data&rdquo;, and
+      nothing reports an error &mdash; you get a corrupt image, or a stream out of sync,
+      later.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">A player connection is added that receives the full unfiltered board
+      and hides the other side in the browser.</p>
+      <ul class="options">
+        <li>The watch channel would need data</li>
+        <li>Opening devtools reveals hidden units</li>
+        <li>Snapshots would exceed the frame limit</li>
+        <li>Undo would stop being per umpire</li>
+      </ul>
+      <p class="why">It arrived at the client, so the player has it &mdash; one devtools tab,
+      or one saved network log, and the whole enemy order of battle is theirs. Hence the rule:
+      <em>filter on the server</em>. This is also precisely why the channel carries no
+      shared board.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">08</span>Read this next</h2>
+
+  <p><a href="https://docs.rs/tokio/latest/tokio/macro.select.html#cancellation-safety">The
+  Cancellation safety section of the <code>tokio::select!</code> docs</a> &mdash; one screen,
+  and the most load-bearing page in async Rust. Read the two lists at the end: the cancel-safe
+  methods and the ones that lose data. Knowing which side a method falls on, and being able to
+  work it out for an undocumented one, is the single most useful async-Rust skill you can
+  take from this project.</p>
+
+  <p>Then <a href="https://docs.rs/tokio/latest/tokio/sync/watch/index.html">the
+  <code>watch</code> module docs</a>, for how little there is to it.</p>
+
+  <p><a href="../reference/network-model.html">The cheat sheet</a> has the per-connection
+  lifecycle and the full path of one drag, which is this lesson compressed.</p>
+
+  <h2 id="next"><span class="n">09</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong><a href="0003-the-clients-lie.html">Lesson 3 &mdash; the client's lie</a>.</strong> Everything so far has been the
+    server. But a round trip to Tokyo is a few hundred milliseconds, and a piece that lags
+    your mouse by that much is unusable. So the client shows you the edit <em>before the
+    server has agreed to it</em> &mdash; <code>PendingEdits</code>, and the rule that what is
+    on screen is "board plus edits in flight". The general pattern has a name, Gabriel
+    Gambetta's write-up is the standard reference, and the subtle part is not showing the
+    lie: it is guaranteeing it can never get stuck.</p>
+    <p>To say out loud before then: <strong>"the channel is a doorbell, not a
+    delivery"</strong> &mdash; and then give the two reasons why.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> Things I compressed here that are worth pulling on: what a
+    <code>Future</code> actually is, if "a thing that gets polled and holds its own progress"
+    was too quick; why <code>Ok(()) = changed.changed()</code> uses a pattern rather than
+    plain assignment, and what happens to that branch when the pattern does not match; why
+    the document is an <code>RwLock</code> and not a <code>Mutex</code>; and the measurement
+    question underneath all of this &mdash; is 20 KB per connection per edit actually a
+    problem at the scale of one Kriegsspiel game, or is the per-unit delta plan premature? I
+    have an opinion on that last one.</p>
+  </div>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

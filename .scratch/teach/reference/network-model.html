@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Model Cheat Sheet</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* Reference pages are denser than lessons: two columns on paper, tighter type. */
+  .page { max-width: 54rem; padding-top: 2.5rem; }
+  .page > * { max-width: none; }
+  h1 { font-size: 1.8rem; }
+  h2 { font-size: 1.05rem; margin-top: 2rem; }
+  h2 .n { display: none; }
+  table { font-size: 0.8rem; margin: 0.8rem 0 1.4rem; }
+  td code, th code { font-size: 0.78rem; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 2.5rem; }
+  @media (max-width: 48rem) { .cols { grid-template-columns: 1fr; } }
+  .path { font-family: var(--mono); font-size: 0.74rem; line-height: 1.9; }
+  .path b { color: var(--accent); font-weight: 400; }
+  @media print { body { font-size: 9pt; } .page { padding: 0; } }
+</style>
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Reference &middot; Kriegsspiel</p>
+  <h1>The network model, on one page</h1>
+  <p class="standfirst">Every message, every route, and the path a single drag takes from one
+  umpire's mouse to another umpire's screen.</p>
+
+  <h2>The transport split</h2>
+
+  <p style="font-size:0.9rem">A socket carries <strong>events</strong>: small, ordered,
+  pushed, perishable. HTTP carries <strong>resources</strong>: large, addressable, cacheable,
+  requested.</p>
+
+  <table>
+    <thead><tr><th>Channel</th><th>Carries</th><th>Why there</th></tr></thead>
+    <tbody>
+      <tr><td><code>ws://host:7878/ws</code></td><td>commands up, snapshots down</td>
+      <td>server must push; ordering matters</td></tr>
+      <tr><td>same socket, binary frame</td><td>image upload</td>
+      <td>must precede the command naming it</td></tr>
+      <tr><td><code>GET /assets/{id}</code></td><td>one image</td>
+      <td>immutable URL, so cached for a year</td></tr>
+      <tr><td><code>GET /save</code></td><td>whole game as <code>.ksg</code></td>
+      <td>browser download wants a response</td></tr>
+      <tr><td><code>POST /load</code></td><td>whole game replaced</td>
+      <td>one large body, one reply</td></tr>
+      <tr><td><code>GET /health</code></td><td><code>"ok"</code></td><td>liveness</td></tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:0.85rem">All HTTP routes carry permissive CORS headers, because the
+  client is never on the game server's origin (<code>localhost:1420</code> in dev,
+  <code>tauri://localhost</code> packaged, the relay for a player). CORS does not apply to
+  the WebSocket, so this is no weaker than what already holds.</p>
+
+  <h2>Client &rarr; server: <code>ClientMessage</code></h2>
+
+  <p style="font-size:0.85rem"><code>crates/server/src/protocol.rs</code>. JSON, tagged by a
+  <code>type</code> field, camelCased. Every one of these is a command: it states the result
+  it wants, not the input that produced it.</p>
+
+  <table>
+    <thead><tr><th>Command</th><th>Fields</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>spawn</code></td><td><code>kind, side, pos</code></td>
+      <td>one new unit</td></tr>
+      <tr><td><code>place</code></td><td><code>units: Placement[]</code></td>
+      <td>absolute <code>pos</code>/<code>rot</code>/<code>scale</code>, each optional; one
+      drag or held key = one command = one undo step</td></tr>
+      <tr><td><code>undo</code> / <code>redo</code></td><td>&mdash;</td>
+      <td>this umpire's own stack only</td></tr>
+      <tr><td><code>recordTurn</code></td><td>&mdash;</td>
+      <td>copies the live board into history</td></tr>
+      <tr><td><code>stepTurn</code></td><td><code>forward</code></td>
+      <td>this umpire's view only</td></tr>
+      <tr><td><code>viewTurn</code></td><td><code>turn: number|null</code></td>
+      <td><code>null</code> = live board</td></tr>
+      <tr><td><code>restoreTurn</code></td><td>&mdash;</td>
+      <td>viewed turn &rarr; live, as one edit</td></tr>
+      <tr><td><code>addMap</code></td><td><code>asset</code></td>
+      <td>image must already be stored; server sets extent from the image header</td></tr>
+      <tr><td><code>removeMaps</code></td><td><code>maps: number[]</code></td>
+      <td>one command for the lot = one undo step</td></tr>
+      <tr><td><code>setUnitImage</code></td><td><code>units, asset|null</code></td>
+      <td><code>null</code> restores the generated symbol</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Server &rarr; client: <code>ServerMessage</code></h2>
+
+  <table>
+    <thead><tr><th>Message</th><th>Fields</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>snapshot</code></td>
+      <td><code>board</code>, <code>turns: TurnInfo[]</code>,
+      <code>viewing: number|null</code></td>
+      <td>on connect, and after every change this client should see. All three taken under
+      one read lock, so the board and its label can never disagree</td></tr>
+      <tr><td><code>assetRejected</code></td><td><code>reason</code></td>
+      <td>an upload the store would not take. Nothing stored, so the command that was going
+      to use it will be refused too</td></tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:0.85rem"><code>TurnInfo</code> is <code>{ recordedAt, pawns }</code>
+  &mdash; enough to list and label a turn, never the board it holds.</p>
+
+  <div class="cols">
+  <div>
+  <h2><code>Effect</code>: who gets told</h2>
+
+  <p style="font-size:0.85rem">Returned by <code>apply()</code>, the pure function the tests
+  call directly.</p>
+
+  <table>
+    <thead><tr><th>Value</th><th>Means</th></tr></thead>
+    <tbody>
+      <tr><td><code>None</code></td><td>nothing changed, nobody needs telling (e.g. undo with
+      an empty stack)</td></tr>
+      <tr><td><code>Me</code></td><td>only the sender: their own view changed (stepping
+      turns), or it was <em>refused</em> and their client may be showing a pending edit that
+      never happened</td></tr>
+      <tr><td><code>Everyone</code></td><td>the live board changed; every connection must
+      rebuild its own view</td></tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:0.85rem"><strong>The invariant:</strong> a refusal still sends a board.
+  That is what makes it impossible for a pending client-side edit to stick.</p>
+  </div>
+
+  <div>
+  <h2>Locks, in order</h2>
+
+  <p style="font-size:0.85rem">Always document first, then images. Every path that needs both
+  follows that order, which is what stops a save (reads both) deadlocking against a load
+  (replaces both).</p>
+
+<pre style="font-size:0.72rem"><code>doc:    Arc&lt;RwLock&lt;Doc&gt;&gt;
+assets: Arc&lt;RwLock&lt;AssetStore&gt;&gt;
+changed: watch::Sender&lt;()&gt;</code></pre>
+
+  <p style="font-size:0.85rem">A lock is never held across a socket write: a slow client must
+  never be able to stall the game. Hashing and zipping go to
+  <code>spawn_blocking</code>.</p>
+  </div>
+  </div>
+
+  <h2>The socket lifecycle</h2>
+
+  <div class="cols">
+  <div>
+  <h3>Server, per connection</h3>
+  <p class="path">
+    <b>1.</b> <code>GET /ws</code> arrives; <code>upgrade()</code> raises the frame and
+    message limits to clear the largest image, then upgrades<br>
+    <b>2.</b> <code>client()</code> starts. Umpire id from <code>next_umpire</code><br>
+    <b>3.</b> <code>changed.subscribe()</code> &mdash; <em>before</em> the first send, so a
+    change in between still wakes the loop<br>
+    <b>4.</b> <code>send_view()</code> &mdash; the first snapshot, unprompted<br>
+    <b>5.</b> <code>loop { tokio::select! { ... } }</code> on two branches:
+    <code>socket.recv()</code> and <code>changed.changed()</code><br>
+    <b>6.</b> any error or close &rarr; <code>break</code>, task ends, receiver dropped
+  </p>
+  </div>
+  <div>
+  <h3>Client</h3>
+  <p class="path">
+    <b>1.</b> <code>new WebSocket(socketEndpoint())</code>, state
+    <code>connecting</code><br>
+    <b>2.</b> <code>onopen</code> &rarr; <code>connected</code><br>
+    <b>3.</b> <code>onmessage</code> &rarr; parse, <code>showView</code> into the store (or
+    <code>setNotice</code>)<br>
+    <b>4.</b> <code>send()</code> drops the message and returns <code>false</code> unless
+    <code>readyState === OPEN</code>; commands are never replayed after a reconnect, because
+    the board may have changed<br>
+    <b>5.</b> <code>onclose</code> &rarr; <code>disconnected</code>, retry in 1500&nbsp;ms,
+    for ever<br>
+    <b>6.</b> reconnect gets a fresh snapshot &mdash; and a <strong>new umpire id</strong>,
+    so undo history is lost
+  </p>
+  </div>
+  </div>
+
+  <h2>The path of one drag</h2>
+
+  <p class="path">
+    <b>&rarr;</b> pointer up ends the <code>Manipulation</code>; past the movement threshold?<br>
+    <b>&rarr;</b> engine builds one <code>place</code> with a <code>Placement</code> per unit<br>
+    <b>&rarr;</b> <code>PendingEdits.hold()</code> &mdash; the screen already shows the result<br>
+    <b>&rarr;</b> <code>serverConnection.send()</code> &mdash; one JSON frame<br>
+    <b>&rarr;</b> <code>client()</code>'s <code>socket.recv()</code> branch wakes<br>
+    <b>&rarr;</b> <code>receive()</code> parses, takes the doc write lock, calls <code>apply()</code><br>
+    <b>&rarr;</b> <code>apply()</code> validates (finite numbers, scale range, ids on board)
+    then <code>Doc::edit()</code> &rarr; one undo step for this umpire<br>
+    <b>&rarr;</b> returns <code>Effect::Everyone</code> &rarr; <code>changed.send_replace(())</code><br>
+    <b>&rarr;</b> <em>every</em> connection's <code>changed.changed()</code> branch wakes<br>
+    <b>&rarr;</b> each calls <code>send_view()</code>: its <em>own</em> <code>doc.shown(umpire)</code><br>
+    <b>&rarr;</b> client <code>onmessage</code> &rarr; <code>showView</code> &rarr; store<br>
+    <b>&rarr;</b> engine's subscriber runs <code>PendingEdits.settle()</code>, pawns spring to
+    the new positions
+  </p>
+
+  <h2>Rules that are easy to break</h2>
+
+  <table>
+    <tbody>
+      <tr><td style="width:13rem"><strong>Server is authoritative</strong></td>
+      <td>there is no client-side <code>Doc</code>. Clients send commands and display boards.</td></tr>
+      <tr><td><strong>Every edit via <code>Doc::edit</code></strong></td>
+      <td>so it becomes one undo step for its umpire. Mutating <code>doc.board</code> directly
+      is for setup only.</td></tr>
+      <tr><td><strong>Filter on the server</strong></td>
+      <td>a player's client must never receive data for units it may not see. Never send the
+      full board and hide it client-side.</td></tr>
+      <tr><td><strong>Screen = board + <code>PendingEdits</code></strong></td>
+      <td>drawing, picking and the values a new edit builds on all read the units
+      <em>as drawn</em>, never <code>board.pawns</code>, which lags the screen by a round
+      trip.</td></tr>
+      <tr><td><strong>A drag is one undo step</strong></td>
+      <td>never a command per frame, never on mouse-down. Presence updates will be separate
+      messages, not edits.</td></tr>
+      <tr><td><strong>A command may only name a stored image</strong></td>
+      <td>so a board can never refer to an image a save would not find.</td></tr>
+      <tr><td><strong>Commands are absolute, so repeats are harmless</strong></td>
+      <td><code>place</code> carries the result it wants, not a delta. Deltas would not
+      survive reordering or replay.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Numbers</h2>
+
+  <table>
+    <tbody>
+      <tr><td><code>DEFAULT_PORT</code></td><td>7878, loopback only, socket and HTTP on the
+      one port</td></tr>
+      <tr><td>reconnect delay</td><td>1500&nbsp;ms, unbounded retries</td></tr>
+      <tr><td>undo/redo cap</td><td>200 steps per umpire</td></tr>
+      <tr><td>socket frame &amp; message limit</td><td><code>MAX_ASSET_BYTES + 1024</code>;
+      both raised, since overrunning the frame limit kills the connection rather than
+      refusing</td></tr>
+      <tr><td>scale range</td><td><code>MIN_SCALE</code> 0.25 &hellip;
+      <code>MAX_SCALE</code> 4</td></tr>
+      <tr><td>assumed round trip</td><td>a few hundred ms through the relay &mdash;
+      <em>an estimate, never measured</em></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Not built yet</h2>
+
+  <table>
+    <tbody>
+      <tr><td style="width:13rem"><strong>Umpire identity</strong></td><td>every connection is
+      a new umpire. Nothing stops a page the umpire visits from opening a socket to their own
+      server and sending commands, or reading <code>/save</code>. Identity owes undo nothing:
+      a connection ending drops its umpire entry (<code>Doc::forget_umpire</code>) by
+      decision, so identity is only about who may do what. ADR 0018.</td></tr>
+      <tr><td><strong>Per-side filtering</strong></td><td><code>doc.shown(umpire)</code> is
+      the hook, but returns the whole board today. Players do not exist as a role yet.</td></tr>
+      <tr><td><strong>Request ids and replies</strong></td><td>a refusal sends a board but
+      never says <em>why</em>. Needed for <code>Step::Partial</code> and for MCP.</td></tr>
+      <tr><td><strong>Per-unit deltas</strong></td><td>considered and <em>rejected</em>, not
+      pending: a delta needs every earlier one, which the watch channel's coalescing will not
+      promise. Snapshots self-heal instead. If the path needs to be cheaper, serialize once
+      per distinct view.</td></tr>
+      <tr><td><strong>Presence</strong></td><td>transient, umpires only, throttled, never part
+      of <code>Doc</code>. Designed in lesson 0007, not built: its own
+      <code>watch&lt;HashMap&lt;UmpireId, Presence&gt;&gt;</code> (never the
+      <code>changed</code> doorbell, which would serialise a whole board per tick);
+      <code>holding: Vec&lt;Placement&gt;</code>, because a drag is a stream of would-be
+      commands; cleared at <code>client()</code>'s exit, with a staleness stamp for half-open
+      connections. Smoothing is already solved: the springs in
+      <code>pawns/spring.ts</code> chase one latest target, which is the only strategy
+      compatible with dropping outdated updates. What is missing is a cursor layer keyed by
+      umpire, and a second input to <code>lifted</code>. ADR 0021, lesson 0006.</td></tr>
+      <tr><td><strong>The relay</strong></td><td>forwarding chosen over WebRTC to start
+      with.</td></tr>
+      <tr><td><strong>Backpressure</strong></td><td>the browser WebSocket API has none; a
+      client that cannot keep up buffers snapshots until it falls over.</td></tr>
+    </tbody>
+  </table>
+
+  <p class="srcline" style="margin-top:2.5rem">Lessons: <a href="../lessons/0001-why-a-socket.html">0001 &mdash; why a socket, and not a
+  request</a> &middot; <a href="../lessons/0002-the-fan-out.html">0002 &mdash; the
+  fan-out</a> &middot; <a href="../lessons/0003-the-clients-lie.html">0003 &mdash; the
+  client's lie</a> &middot; <a href="../lessons/0004-who-are-you.html">0004 &mdash; who are
+  you?</a> &middot; <a href="../lessons/0005-where-state-lives.html">0005 &mdash; where state
+  lives</a> &middot; <a href="../lessons/0006-smoothing-what-arrives-late.html">0006 &mdash;
+  smoothing what arrives late</a> &middot;
+  <a href="../lessons/0007-the-shape-of-presence.html">0007 &mdash; the shape of
+  presence</a> &middot;
+  <a href="../lessons/0008-build-the-presence-channel.html">0008 &mdash; build it: the
+  presence channel</a></p>
+
+</main>
+</body>
+</html>

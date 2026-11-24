@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build It: The Presence Channel</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0008 &middot; Kriegsspiel network model</p>
+  <h1>Build it: the presence channel</h1>
+  <p class="standfirst">Seven lessons of reading and one of design. This one you write. The
+  design is already settled &mdash; 0007 chose the channel, the payload and the cleanup
+  &mdash; so nothing here is a puzzle about what to build. What is left is the part that only
+  transfers by doing it: getting a second channel into a live socket loop without breaking
+  the one already there.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="1">
+      <p class="prompt">Why can presence not travel on the <code>changed</code> channel?</p>
+      <ul class="options">
+        <li>Each ring serialises a whole board</li>
+        <li>The channel carries no payload data</li>
+        <li>Watch channels coalesce the updates away</li>
+        <li>Umpires would receive their own cursors</li>
+      </ul>
+      <p class="why">Because of what each connection <em>does</em> when the doorbell rings:
+      it calls <code>send_view</code>, which serialises an entire board. Carrying no payload
+      is true but fixable; the cost at the other end is not.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What does a lagging <code>broadcast</code> receiver get?</p>
+      <ul class="options">
+        <li>Lagged, then the newest value only</li>
+        <li>Lagged, then the oldest retained value</li>
+        <li>Nothing, because the sender blocks</li>
+        <li>Lagged, then a full resync message</li>
+      </ul>
+      <p class="why">The oldest value still in the ring, so it walks a backlog of stale
+      frames before reaching the present. Sequence-preserving, which is the opposite of what
+      a cursor wants.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">What makes a connection's cleanup provable, not hopeful?</p>
+      <ul class="options">
+        <li>A Drop guard on the socket</li>
+        <li>A periodic sweep over the umpires</li>
+        <li>One exit point every path meets</li>
+        <li>A heartbeat timing the umpire out</li>
+      </ul>
+      <p class="why">One exit point. A <code>Drop</code> guard cannot work here at all: the
+      document sits behind a <code>tokio</code> lock, and locking it from <code>Drop</code>
+      would mean <code>blocking_write</code> inside the runtime, which panics.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>What you are building, and what you are not</h2>
+
+  <p>Held pieces only. No cursors.</p>
+
+  <p class="with-note">A manipulation has exactly two interesting moments &mdash; it starts
+  and it ends &mdash; so the held-pieces half of presence is human-paced and needs
+  <strong>no throttling at all</strong>. Two messages per drag. Cursors need the 20&nbsp;Hz
+  stream, a throttle, and a decision about smoothing: a second problem, and a worse first
+  exercise.</p>
+  <p class="note">It is also the half your own <code>CLAUDE.md</code> justifies on its own
+  terms &mdash; &ldquo;so two umpires do not grab the same piece unawares&rdquo;. Cursors are
+  pleasant. This one prevents a collision.</p>
+
+  <p>Scope, then: the server learns what each umpire is holding, tells the others, and
+  forgets it when a connection ends. The client half is a stretch goal at the bottom, and
+  deliberately unspecified.</p>
+
+  <h2><span class="n">02</span>How you will know it works</h2>
+
+  <p>Six tests are waiting in
+  <code>.scratch/teach/exercises/0001-presence-tests.rs</code>. Paste the whole block inside
+  the existing <code>mod tests</code> in <code>crates/server/src/lib.rs</code>, above
+  <code>placement_json_leaves_out_unset_fields</code>. Then:</p>
+
+<pre><code>cargo test -p kriegsspiel-server presence</code></pre>
+
+  <p>It will not compile, and that is the first instruction: the compiler names the thing
+  that does not exist yet. Work down the tasks until all six pass. Run the whole suite before
+  you commit, since that is what regenerates <code>client/src/bindings/</code>.</p>
+
+  <div class="callout">
+    <span class="label">What the tests deliberately cannot reach</span>
+    <p>None of them opens a socket. Testing the <code>select!</code> arm would mean binding a
+    port and taking a WebSocket client as a dev-dependency, and this repository has chosen
+    not to &mdash; the HTTP tests go through the router with <code>tower</code>'s
+    <code>oneshot</code> instead. So the loop is untested here, which is exactly why ADR 0021
+    made <code>apply</code> &ldquo;a plain function the tests call directly&rdquo;.
+    <strong>Push every decision out of the loop into something a test can call, and leave the
+    loop holding nothing worth testing.</strong> That principle is the real subject of tasks
+    3 to 6.</p>
+  </div>
+
+  <h2><span class="n">03</span>Task 1 &mdash; the two messages</h2>
+
+  <p>The tests pin the wire format, because they send raw JSON:</p>
+
+<pre><code>client &rarr; server   {"type":"presence","holding":[{"id":0,"pos":[1,2]}]}
+server &rarr; client   {"type":"presence","holding":[ ... ]}</code></pre>
+
+  <p>One variant on each of <code>ClientMessage</code> and <code>ServerMessage</code> in
+  <code>crates/server/src/protocol.rs</code>, both carrying
+  <code>Vec&lt;Placement&gt;</code>. Match the file's house style: the serde and ts-rs
+  attributes sit on the enums already, so a variant needs none of its own.</p>
+
+  <p class="with-note">A question worth answering before you type. The same name points both
+  ways and means something different each way: outbound it is <em>what I am holding</em>,
+  inbound it is <em>what everybody else is holding</em>. Is that acceptable, or should one of
+  them be called something else?</p>
+  <p class="note">I think it is acceptable, because every message in this protocol is already
+  written from the receiver's point of view &mdash; a <code>snapshot</code> is &ldquo;your
+  view&rdquo;, not &ldquo;the board&rdquo;. But decide it rather than inherit it.</p>
+
+  <details class="hint">
+    <summary>The declarations</summary>
+    <p>On <code>ServerMessage</code>:</p>
+<pre><code>/// What the other umpires are holding: the placements their drags would send if
+/// they ended now, flattened into one list. The receiver's own holdings are left
+/// out, since it is already drawing its own drag.
+///
+/// For drawing only. These placements are in no board and may never reach one.
+Presence { holding: Vec&lt;Placement&gt; },</code></pre>
+    <p>On <code>ClientMessage</code>:</p>
+<pre><code>/// What this umpire is holding: the placements its manipulation would send if it
+/// ended now. An empty list means it is holding nothing.
+///
+/// Not an edit. It changes no board, is not undoable and is never saved.
+Presence { holding: Vec&lt;Placement&gt; },</code></pre>
+  </details>
+
+  <h2><span class="n">04</span>Task 2 &mdash; the channel</h2>
+
+  <p>Write the field declaration for <code>Game</code> before you open the hint. One line.
+  You settled the channel type in 0007 and the warm-up just asked you why.</p>
+
+  <p>Three things to decide, and the test file quietly assumes all three:</p>
+
+  <ol class="steps">
+    <li><strong>Which primitive.</strong> Latest-only or sequence-preserving? A slow client
+    that falls behind a 20&nbsp;Hz stream should see <em>fewer</em> frames, never a
+    backlog.</li>
+    <li><strong>Keyed or flat.</strong> One umpire's connection ends. What has to happen to
+    the value, and what does that demand of its shape?</li>
+    <li><strong>In <code>Doc</code> or in <code>Game</code>.</strong> Rule one of the brief
+    answers this, and getting it right is what keeps <code>save.rs</code> and
+    <code>model.rs</code> out of this exercise entirely.</li>
+  </ol>
+
+  <details class="hint">
+    <summary>The field</summary>
+<pre><code>/// What each umpire is holding right now, for the others to draw. Unlike the
+/// document this channel carries its whole value, because there is no filtering to
+/// do and the value is a handful of placements; an umpire holding nothing has no
+/// entry.
+///
+/// Not in `Doc`: presence is transient, never saved and never undoable, so it takes
+/// no document lock and cannot be left behind in a save.
+presence: watch::Sender&lt;HashMap&lt;UmpireId, Vec&lt;Placement&gt;&gt;&gt;,</code></pre>
+    <p>Keyed by umpire, because a departure has to clear <em>one</em> entry. Not a
+    <code>Mutex</code>, because nothing would wake the connections. Not
+    <code>broadcast</code>, for the reason in the warm-up. And it needs initialising in
+    <code>with_assets</code> alongside <code>changed</code>.</p>
+  </details>
+
+  <h2><span class="n">05</span>Task 3 &mdash; <code>set_presence</code></h2>
+
+  <p>Two tests describe it, and both are about <em>silence</em>:</p>
+
+  <ol class="steps">
+    <li><code>an_umpire_holding_nothing_has_no_entry</code> &mdash; holding nothing means
+    <em>absent</em>, not an empty list. Ask what a client connecting ten minutes later would
+    be told otherwise.</li>
+    <li><code>an_unchanged_holding_wakes_nobody</code> &mdash; a repeated holding must wake
+    no one. This is the test that makes you read the API properly.</li>
+  </ol>
+
+  <p><code>watch::Sender</code> offers <code>send</code>, <code>send_replace</code>,
+  <code>send_modify</code> and <code>send_if_modified</code>. Three of those notify
+  unconditionally. Only one can express rule two, and the shape of its closure tells you
+  how.</p>
+
+  <p class="with-note">Note what you are <em>not</em> allowed to do: read the map, clone it,
+  change your entry, send the clone back. That is a read-modify-write race &mdash; two
+  umpires moving at once, and one of them disappears from the map.</p>
+  <p class="note">The same hazard as any other compare-and-swap, met here by accident rather
+  than on purpose. The API hands you the fix, provided you pick the right method.</p>
+
+  <details class="hint">
+    <summary>Which method, and the shape</summary>
+    <p><code>send_if_modified</code>. Its closure is
+    <code>FnOnce(&amp;mut T) -&gt; bool</code>, and that bool decides whether anyone is woken,
+    so the decision happens <em>inside</em> the lock with the current value in hand. The body
+    has three outcomes: nothing held and an entry existed (remove it, notify); the entry
+    already equals this holding (notify nobody); otherwise insert and notify.
+    <code>Placement</code> derives <code>PartialEq</code>, so comparing two holdings is one
+    <code>==</code>.</p>
+  </details>
+
+  <h2><span class="n">06</span>Task 4 &mdash; <code>others_holding</code></h2>
+
+  <p>A free function, not a method: given the map and one umpire, every <em>other</em>
+  umpire's placements as one list. Four lines of iterator.</p>
+
+  <p>The design point is in the exclusion, not the code. Leaving out the receiver's own entry
+  is what keeps <code>UmpireId</code> off the wire &mdash; and it is off the wire today,
+  everywhere. A client needs to know that a piece is held by somebody else, not by whom. The
+  day you want named cursors you will have to put an identifier in the protocol, and it
+  should be a per-connection label rather than this one.</p>
+
+  <details class="hint">
+    <summary>One snag you will hit</summary>
+    <p>Edition 2024 match ergonomics: a reference pattern such as <code>|(&amp;id, _)|</code>
+    is refused in a closure over <code>iter()</code>. Bind by reference and dereference in
+    the body instead.</p>
+  </details>
+
+  <h2><span class="n">07</span>Task 5 &mdash; keeping it out of the document</h2>
+
+  <p>Presence must never take the document lock. Find where in <code>Game::receive</code>
+  that has to be enforced, and notice that <em>where</em> is the whole answer: anywhere after
+  the <code>let effect = {</code> block has already acquired a write lock on the document in
+  order to decide it was not needed.</p>
+
+  <p>Then two judgment calls the tests encode:</p>
+
+  <ol class="steps">
+    <li><strong>What <code>Effect</code> does presence return?</strong> Compare with
+    <code>Place</code>, which answers <code>Effect::Me</code> when it refuses, so the sender
+    can clear a pending edit it is showing. Is there anything to clear here?</li>
+    <li><strong>A broken value is dropped, not refused.</strong> Validate with the same
+    <code>valid_placement</code> the commands use, then throw the message away silently. Work
+    out why dropping is right, and &mdash; harder &mdash; why relaying one infinity onward
+    would be worse than refusing a command. The answer is in <code>spring.ts</code>.</li>
+  </ol>
+
+  <div class="breaks">
+    <p>One more thing will happen here, and it is worth stopping to look at rather than
+    silencing. <code>apply</code> matches <code>ClientMessage</code> exhaustively, so the
+    compiler will demand an arm for the variant you just added &mdash; a variant that is
+    never meant to reach <code>apply</code> at all. <strong>Whatever you write there, a
+    comment is now the only thing keeping presence out of the document.</strong> Decide
+    whether that bothers you enough to do something about it, and if so, what.</p>
+  </div>
+
+  <h2><span class="n">08</span>Checkpoint</h2>
+
+  <p>Six green. If you stop here you have a server that knows who is holding what and tells
+  nobody &mdash; a real, tested, committable half, and the half the tests can defend.
+  Everything below is the untested part.</p>
+
+  <h2><span class="n">09</span>Task 6 &mdash; the second arm</h2>
+
+  <p>Now <code>serve_client</code>: a subscription, an arm in the <code>select!</code>, and a
+  sender. Three traps, and each is a question you should be able to answer before writing the
+  line that avoids it.</p>
+
+  <ol class="steps">
+    <li><strong>Why must the first presence message be sent by hand?</strong> One sentence
+    already in the loop is the clue &mdash; the comment above
+    <code>let mut changed = game.changed.subscribe();</code>.</li>
+    <li><strong>Why can the send not be one expression?</strong> As in
+    <code>send(socket, &amp;Presence { holding: others_holding(&amp;game.presence.borrow(),
+    umpire) }).await</code>. Something in there is a lock, and something in there is an
+    await.</li>
+    <li><strong>What happens to a slow client under a 20&nbsp;Hz stream?</strong> Trace it.
+    This is the payoff for task 2, and the strongest single thing you can say about this
+    design out loud.</li>
+  </ol>
+
+  <details class="hint">
+    <summary>The three answers</summary>
+    <p><strong>One.</strong> <code>subscribe</code> marks the current value as already seen,
+    so <code>changed()</code> will not fire for the state that existed when you subscribed.
+    Without an explicit first send, a client joining mid-drag sees nothing held until
+    somebody moves.</p>
+    <p><strong>Two.</strong> The borrow is a read guard on the channel's internal lock, and it
+    would live to the end of the statement &mdash; across the socket write. Build the message
+    in a statement of its own so the guard drops, then await. The same discipline as
+    <code>send_view</code> releasing the document lock before sending, and for the same
+    reason: a slow client must never hold a lock.</p>
+    <p><strong>Three.</strong> Nothing bad, and that is the whole argument. The channel holds
+    one value, so a client that is not keeping up misses intermediate states and reads the
+    latest when it arrives. No per-connection queue, no unbounded memory, no backpressure.
+    That is what &ldquo;drop outdated ones instead of queueing them&rdquo; buys, and why the
+    brief asked for it.</p>
+  </details>
+
+  <h2><span class="n">10</span>Task 7 &mdash; the vanishing umpire</h2>
+
+  <p>One line, and you built the place for it last session. An umpire's lid closes mid-drag;
+  their pieces must not hang in the air for everyone else.</p>
+
+  <p>Two details worth noticing as you write it. It is not <code>async</code>, unlike
+  <code>forget_umpire</code> &mdash; presence is not in the document, so there is no lock to
+  wait for. And it can share the code path with &ldquo;holding nothing&rdquo;, which is worth
+  doing: one rule, enforced in one place.</p>
+
+  <p class="with-note">What this does not close is a half-open connection, where the socket
+  stays notionally alive for minutes after the client has gone. Structural cleanup cannot see
+  that, and no amount of care at the exit point will fix it.</p>
+  <p class="note">The second layer is a staleness stamp, and the ordering matters: cleanup is
+  the mechanism, staleness is the fallback. Staleness alone would leave a ghost for the whole
+  timeout on every ordinary disconnect.</p>
+
+  <h2><span class="n">11</span>Stretch &mdash; the client half</h2>
+
+  <p>Deliberately unspecified, because the interesting part is a seam decision rather than
+  code. Three questions, in order:</p>
+
+  <ol class="steps">
+    <li><strong>Where does the message enter the client?</strong> Not the store &mdash; ADR
+    0019 names presence as engine-side. So <code>ServerConnection</code>, which today only
+    ever writes into the store, needs something new.</li>
+    <li><strong>Where do the held ids end up?</strong> <code>PawnLayer</code> already takes a
+    set of lifted ids every frame. There is a method beside it that is the exact pattern you
+    want for the stored version: find it.</li>
+    <li><strong>Why must this not go through <code>PendingEdits</code>?</strong> The one to
+    get right. Follow <code>this.shown</code> and list everything that reads it.</li>
+  </ol>
+
+  <details class="hint">
+    <summary>The answer to the third, because it is the trap</summary>
+    <p><code>shown</code> feeds <code>Picker</code> and <code>EditorContext.units()</code>
+    &mdash; what <code>CLAUDE.md</code> calls &ldquo;the values a new edit builds on&rdquo;.
+    Put another umpire's uncommitted drag in there and your next <code>place</code> command
+    is computed from a position the server has never seen. If they cancel the drag, you have
+    moved a piece to coordinates that never existed.</p>
+    <p><code>PawnLayer</code> is the right home because its own doc comment already says
+    &ldquo;This is drawing only&rdquo;, and the precedent is there: the springs draw every
+    block away from its unit constantly, and picking uses the exact positions regardless. A
+    remotely-held block is the same category of thing.</p>
+  </details>
+
+  <h2><span class="n">12</span>Say it aloud</h2>
+
+  <p>When the tests are green, answer these from memory, out loud, without the page:</p>
+
+  <ol class="steps">
+    <li>Why presence gets its own channel, in terms of what the other one costs.</li>
+    <li>Why that channel is latest-only, in terms of what a slow client does.</li>
+    <li>Why a departed umpire's pieces fall, in terms of where the code for it lives.</li>
+  </ol>
+
+  <p>Those three are the whole design, and they are the version an interviewer can follow.</p>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> Stuck on a task, or green and wanting the implementation
+    reviewed &mdash; the second is the more useful of the two. I have deliberately left no
+    worked solution anywhere in this workspace, so a review will be me reading what you
+    wrote.</p>
+    <p>Also fair game: whether the <code>apply</code> arm in task 5 should be solved with a
+    type rather than a comment, and whether validating presence at all is the right call when
+    it changes nothing.</p>
+  </div>
+
+  <div class="nextup">
+    <p><strong>After this.</strong> The client half as its own exercise, with the seam
+    decision already made &mdash; or the untouched gap, which is backpressure, heartbeats and
+    what really happens to a WebSocket over a long-haul link through proxies.
+    <code>RESOURCES.md</code> still lists nothing on it, and task 7's half-open connection is
+    the first time this series has run into it for real.</p>
+  </div>
+
+  <p class="srcline" style="margin-top:3rem">
+    <a href="../reference/network-model.html">Cheat sheet</a> &middot;
+    <a href="0007-the-shape-of-presence.html">&larr; 0007 The shape of presence</a> &middot;
+    <a href="../GLOSSARY.md">Glossary</a>
+  </p>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

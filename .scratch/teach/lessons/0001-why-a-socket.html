@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why a Socket</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0001 &middot; Kriegsspiel network model</p>
+  <h1>Why a socket, and not a request</h1>
+  <p class="standfirst">An umpire in Berlin moves a piece. An umpire in Tokyo has to see it.
+  Nothing in HTTP can do that, and the reason is worth knowing precisely, because the shape
+  of the whole server follows from it.</p>
+
+  <h2><span class="n">01</span>The question the transport has to answer</h2>
+
+  <p>Your target scenario says umpires edit together, live, from anywhere in the world. Strip
+  that down to one sentence of mechanism:</p>
+
+  <blockquote>
+    <p>Berlin changed something. Who tells Tokyo?</p>
+  </blockquote>
+
+  <p class="with-note">In HTTP, nobody can. An HTTP exchange is <em>client asks, server
+  answers</em>, and the server cannot speak first &mdash; it has no channel to speak
+  <em>into</em>. The connection exists because the client opened it to ask a question, and
+  once the answer is sent that is the end of it. The server knows about Berlin's edit
+  immediately; it simply has no way to mention it to Tokyo.</p>
+  <p class="note">This is the asymmetry to hold onto. Not &ldquo;HTTP is slow&rdquo; &mdash;
+  HTTP is fine. The problem is that it is <strong>client-initiated only</strong>.</p>
+
+  <p>So with HTTP alone there is exactly one option left: Tokyo asks, over and over. <em>Any
+  change yet? Any change yet?</em> That is polling, and it is what the WebSocket RFC was
+  written to replace. The authors list three costs, and they are worth reading in their own
+  words:</p>
+
+  <blockquote>
+    <p>&ldquo;The server is forced to use a number of different underlying TCP connections
+    for each client&hellip; The wire protocol has a high overhead, with each client-to-server
+    message having an HTTP header&hellip; The client-side script is forced to maintain a
+    mapping from the outgoing connections to the incoming connection&hellip;&rdquo;</p>
+    <p>&ldquo;A simpler solution would be to use a single TCP connection for traffic in both
+    directions.&rdquo;</p>
+    <cite><a href="https://www.rfc-editor.org/rfc/rfc6455.html">RFC 6455 &sect;1.1,
+    Background</a></cite>
+  </blockquote>
+
+  <p class="with-note">There is a fourth cost the RFC does not spell out, and it is the one
+  that matters most here: <strong>a latency floor</strong>. If Tokyo polls once a second,
+  the <em>average</em> delay before Berlin's edit shows up is half a second, on top of the
+  round trip. Poll ten times a second to fix that and you have multiplied every client's
+  request load by ten, mostly to be told nothing has changed.</p>
+  <p class="note">A graphics analogy that actually holds: polling is reading back from the
+  GPU every frame to find out whether a draw finished. The cost is not the bandwidth. It is
+  that you only ever learn at your own sampling rate.</p>
+
+  <figure class="wide">
+    <svg viewBox="0 0 560 200" role="img" aria-label="Polling versus socket timelines">
+      <text class="dtitle" x="0" y="12">Polling</text>
+      <line class="dline" x1="70" y1="26" x2="70" y2="82"/>
+      <line class="dline" x1="470" y1="26" x2="470" y2="82"/>
+      <text class="dlabel" x="36" y="22">Tokyo</text>
+      <text class="dlabel" x="455" y="22">server</text>
+      <path class="ddash" d="M70 42 L470 42"/>
+      <text class="dlabel" x="180" y="38">ask &mdash; nothing yet</text>
+      <path class="ddash" d="M70 60 L470 60"/>
+      <text class="dlabel" x="180" y="56">ask &mdash; nothing yet</text>
+      <path class="dhot" d="M70 78 L470 78"/>
+      <text class="dlabel" x="180" y="74">ask &mdash; at last, the edit</text>
+      <text class="dlabel" x="70" y="98">a fresh connection and a fresh HTTP header each time,</text>
+      <text class="dlabel" x="70" y="110">and up to one poll interval of delay</text>
+
+      <text class="dtitle" x="0" y="146">WebSocket</text>
+      <line class="dline" x1="70" y1="158" x2="70" y2="192"/>
+      <line class="dline" x1="470" y1="158" x2="470" y2="192"/>
+      <rect class="dfill" x="70" y="162" width="400" height="10" rx="5"/>
+      <text class="dlabel" x="160" y="170" style="fill:var(--accent)">one TCP connection, held open</text>
+      <path class="dhot" d="M470 186 L70 186"/>
+      <text class="dlabel" x="180" y="198">server speaks first, the moment Berlin edits</text>
+    </svg>
+    <figcaption>The win is not bandwidth. It is that the second diagram has an arrow
+    pointing left, which the first one cannot draw at all.</figcaption>
+  </figure>
+
+  <h2><span class="n">02</span>What a WebSocket actually is</h2>
+
+  <p>Three facts, and they are all you need in order to read this codebase.</p>
+
+  <p><strong>It starts as HTTP and stops being HTTP.</strong> The client sends an ordinary
+  HTTP request carrying <code>Upgrade: websocket</code>. The server answers
+  <code>HTTP/1.1 101 Switching Protocols</code>, and from that moment the same TCP connection
+  carries WebSocket frames instead. The RFC is explicit that &ldquo;<em>any status code other
+  than 101 indicates that the WebSocket handshake has not completed</em>&rdquo;, with normal
+  HTTP semantics still applying. This is why your socket and your HTTP routes share one
+  port: <code>/ws</code> is a route like any other, right up until it upgrades.</p>
+
+  <p class="with-note"><strong>It is a thin layer over TCP.</strong>
+  &ldquo;<em>Conceptually, WebSocket is really just a layer on top of TCP</em>&rdquo;
+  (&sect;1.5). What the layer adds is <em>message framing</em>: TCP gives you a byte stream
+  with no boundaries, and WebSocket chops it into discrete messages, each one text or
+  binary. &ldquo;<em>A message is composed of one or more frames.</em>&rdquo;</p>
+  <p class="note">Without framing you would have to invent a length prefix to know where one
+  JSON command ends and the next begins. The protocol does it for you, which is why
+  <code>ServerConnection</code> can simply <code>JSON.parse</code> each
+  <code>event.data</code>.</p>
+
+  <p><strong>Everything TCP guarantees, you inherit.</strong> One connection, so messages
+  arrive <em>in the order they were sent</em>, exactly once, or the connection breaks. Hold
+  onto that one; section 3 spends it.</p>
+
+  <h2><span class="n">03</span>Four properties, and the code that spends them</h2>
+
+  <p>A socket is not free: it is a long-lived connection and a task per client. Here is what
+  this project buys with it. Each one is a line of code you can point at.</p>
+
+  <h3>Push: the server can start a conversation</h3>
+
+<pre><code><span class="c">// crates/server/src/lib.rs &mdash; after a command changed the live board</span>
+<span class="k">if</span> effect == Effect::Everyone {
+    self.changed.send_replace(());
+}</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:140&ndash;142</p>
+
+  <p>That wakes every connected client's task, and each one then sends its own fresh snapshot
+  &mdash; including the umpire who caused the change. Nobody asked for it. This is the arrow
+  HTTP cannot draw, and it is the whole reason the transport decision went the way it did.
+  (<a href="0002-the-fan-out.html">Lesson 2</a> is about how that fan-out works.)</p>
+
+  <h3>Order: two dependent messages, with no handshake between them</h3>
+
+  <p class="with-note">When you add a map, the client sends the image as raw bytes, then
+  sends <code>addMap</code> naming that image's hash. The second message is useless if it
+  arrives first. There is no acknowledgement, no retry and no state machine &mdash; and the
+  comment in the server says exactly why:</p>
+  <p class="note">The server <em>does</em> answer if the upload is refused
+  (<code>assetRejected</code>). Only the happy path is silent: the client hashed the file
+  itself, so a confirmation would tell it nothing it did not already know.</p>
+
+<pre><code><span class="c">// A binary frame is an image being uploaded... The command that uses it</span>
+<span class="c">// follows as its own message, and a WebSocket keeps order, so the image is</span>
+<span class="c">// always in the store by the time that command is applied.</span>
+Some(Ok(Message::Binary(bytes))) =&gt; { <span class="c">/* ... */</span> }</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:481&ndash;486</p>
+
+  <p>Over HTTP those would be two independent requests that can land in either order, so you
+  would have to await the upload before issuing the command &mdash; a round trip you now do
+  not pay. <strong>Ordering is a property you are deliberately spending, not a happy
+  accident.</strong></p>
+
+  <h3>Identity: the connection <em>is</em> the session</h3>
+
+<pre><code><span class="c">// Every connection is a new umpire until umpires can identify themselves.</span>
+<span class="k">let</span> umpire = game.next_umpire.fetch_add(1, Ordering::Relaxed);</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:464</p>
+
+  <p class="with-note">An HTTP server has no idea whether two requests come from the same
+  person; that is what cookies and tokens are for. A socket does know: the connection is
+  open, so <em>while it lasts</em> there is an obvious place to hang per-client state. Undo
+  stacks live per <code>UmpireId</code>, and that id is handed out exactly once, here, when
+  the socket opens.</p>
+  <p class="note">The sting in the tail: if identity lives only in the connection, it dies
+  with the connection. Reconnect and you are umpire 7 instead of umpire 3, and umpire 3's
+  undo history is unreachable. A known gap in <code>CLAUDE.md</code> rather than an
+  oversight &mdash; and it is lesson 4.</p>
+
+  <h3>Cost per message: near enough nothing</h3>
+
+  <p>No HTTP headers, no TLS handshake, no connection setup &mdash; a <code>place</code>
+  command is a few dozen bytes of JSON in one frame. That is what makes it reasonable to
+  send a command on every drag release rather than batching them, and what will make
+  presence updates at roughly 20 a second affordable in step 5.</p>
+
+  <h2><span class="n">04</span>So why is anything still HTTP?</h2>
+
+  <p>Because the socket is the wrong tool for three of the things this server does, and the
+  split is deliberate. From the top of <code>lib.rs</code>:</p>
+
+  <blockquote>
+    <p>&ldquo;Those are plain HTTP because a 16 MB map image belongs in something the browser
+    can cache and a save belongs in something it can download, neither of which a WebSocket
+    does for us.&rdquo;</p>
+    <cite>crates/server/src/lib.rs:3&ndash;6</cite>
+  </blockquote>
+
+  <table>
+    <thead><tr><th>Goes over</th><th>What</th><th>Because</th></tr></thead>
+    <tbody>
+      <tr><td>socket</td><td>commands, snapshots</td><td>changes to shared state; everyone
+      needs them, unprompted</td></tr>
+      <tr><td>socket, binary</td><td>image upload</td><td>must be ordered before the command
+      that names it</td></tr>
+      <tr><td>HTTP GET</td><td><code>/assets/{id}</code></td><td>large, immutable and
+      <em>addressable</em>, so the browser caches it and three.js can just be handed a
+      URL</td></tr>
+      <tr><td>HTTP GET</td><td><code>/save</code></td><td>the browser's download machinery
+      wants a response to a request</td></tr>
+      <tr><td>HTTP POST</td><td><code>/load</code></td><td>one large body, one reply, no
+      ordering constraint</td></tr>
+    </tbody>
+  </table>
+
+  <p class="with-note">The principle underneath transfers to any project:
+  <strong>a socket is for <em>events</em> &mdash; small, ordered, pushed, perishable. HTTP is
+  for <em>resources</em> &mdash; large, addressable, cacheable, requested.</strong> An asset
+  id is the SHA-256 of the bytes, so <code>/assets/{id}</code> can never come to mean a
+  different image, which is why the server can set
+  <code>Cache-Control: public, max-age=31536000, immutable</code> and never think about it
+  again. You cannot cache a socket message. You would not want to.</p>
+  <p class="note">Note the direction split on images: <em>up</em> the socket, <em>down</em>
+  over HTTP. Not an inconsistency &mdash; the upload needs ordering and the download needs
+  caching, and each leg takes the transport that gives it that.</p>
+
+  <h2><span class="n">05</span>Recall</h2>
+
+  <p>Answer from memory before scrolling back up. Getting one wrong and seeing why is worth
+  more to you than getting it right with the text still in view.</p>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="3">
+      <p class="prompt">Per RFC 6455, what does HTTP polling force the server to do?</p>
+      <ul class="options">
+        <li>Buffer every unread client message</li>
+        <li>Hold one lock per client</li>
+        <li>Use many separate TCP connections</li>
+        <li>Send its state as JSON</li>
+      </ul>
+      <p class="why">&sect;1.1: <em>&ldquo;The server is forced to use a number of different
+      underlying TCP connections for each client.&rdquo;</em> The other two costs it lists
+      are the per-message HTTP header, and the client having to map outgoing requests onto
+      the incoming one. <strong>None of the three is about speed</strong> &mdash; they are
+      all about the shape being wrong.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What wakes a connection to resend its snapshot?</p>
+      <ul class="options">
+        <li>A poll from its client</li>
+        <li>The watch channel being written</li>
+        <li>A timer inside the loop</li>
+        <li>The document lock releasing</li>
+      </ul>
+      <p class="why"><code>self.changed.send_replace(())</code>. There is no timer and no
+      polling anywhere in this server: a connection sleeps until either its client says
+      something or the board changes. <strong>Event-driven, not frame-driven</strong> &mdash;
+      the opposite of your render loop.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">Why can the client send image bytes and then immediately send the
+      command naming them?</p>
+      <ul class="options">
+        <li>The server acknowledges each upload</li>
+        <li>The client retries until accepted</li>
+        <li>Commands apply in any order</li>
+        <li>A socket preserves message order</li>
+      </ul>
+      <p class="why">One TCP connection, so messages arrive in the order they were sent. The
+      bytes are in the store before the command naming them is applied. Over two HTTP
+      requests you would have to await the upload first. <strong>The guarantee replaces a
+      round trip.</strong></p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Why are map images served over HTTP rather than the socket?</p>
+      <ul class="options">
+        <li>The socket cannot carry bytes</li>
+        <li>They change on every edit</li>
+        <li>The browser can cache them</li>
+        <li>The server compresses them first</li>
+      </ul>
+      <p class="why">A socket message is an event that happens once; it has no URL, so
+      nothing can cache it. An image has a content-hash id, so its URL is immutable and the
+      browser keeps it for a year. Option 1 is simply false &mdash; the socket carries binary
+      perfectly well, which is exactly how images go <em>up</em>.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What identifies an umpire today?</p>
+      <ul class="options">
+        <li>A token the host issues</li>
+        <li>The open socket connection itself</li>
+        <li>A cookie set at login</li>
+        <li>Their place in the board</li>
+      </ul>
+      <p class="why">A counter bumped once per connection. Convenient, and it is what makes
+      per-umpire undo possible at all &mdash; but it means <strong>identity dies with the
+      connection</strong>, so a reconnect loses undo history. Known gap, not an accident.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">06</span>Drill: which transport?</h2>
+
+  <p>The skill, as opposed to the knowledge. For each one, decide before you click.</p>
+
+  <ol class="quiz two" data-label="Drill">
+    <li class="q" data-answer="1">
+      <p class="prompt">An umpire drags three units into a line.</p>
+      <ul class="options"><li>Socket</li><li>HTTP</li></ul>
+      <p class="why">One <code>place</code> command, one undo step. A change to shared state
+      that every other umpire must see unprompted: the definition of an event.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">A player's browser needs the 14&nbsp;MB map image.</p>
+      <ul class="options"><li>Socket</li><li>HTTP</li></ul>
+      <p class="why"><code>GET /assets/{id}</code>. Large, immutable, cacheable, and handed to
+      three.js as a plain URL. Pushing it down the socket would mean re-sending it on every
+      reconnect.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">An umpire records a turn.</p>
+      <ul class="options"><li>Socket</li><li>HTTP</li></ul>
+      <p class="why"><code>recordTurn</code>. It changes the document, so every client's
+      snapshot &mdash; and therefore its turn list &mdash; has to change. Event.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">The umpire clicks Save and wants a <code>.ksg</code> file on disk.</p>
+      <ul class="options"><li>Socket</li><li>HTTP</li></ul>
+      <p class="why"><code>GET /save</code>. The browser's download machinery is built around
+      a response to a request; a socket message is not something it can offer as a file.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">An umpire uploads a new map image.</p>
+      <ul class="options"><li>Socket</li><li>HTTP</li></ul>
+      <p class="why">The catch. <em>Up</em> the socket as a binary frame, because
+      <code>addMap</code> follows it and ordering does the job an acknowledgement would
+      otherwise have to do. The same bytes come back <em>down</em> over HTTP. Different legs,
+      different needs.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">A client reconnects and needs the whole current board.</p>
+      <ul class="options"><li>Socket</li><li>HTTP</li></ul>
+      <p class="why">Sent unprompted the moment the socket opens, before the loop even
+      starts. Worth noticing that the <em>first</em> thing a connection does is push, with
+      nothing having been asked of it.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">07</span>Read this next</h2>
+
+  <p><a href="https://www.rfc-editor.org/rfc/rfc6455.html">RFC 6455, sections 1.1 to
+  1.5</a> &mdash; about three pages. Not the frame layout, not the masking rules: just the
+  motivation and the overview. It is the highest-trust source there is on why this protocol
+  exists, it is unusually well written for an RFC, and &ldquo;I read the first three pages of
+  the RFC&rdquo; is a sentence that carries weight.</p>
+
+  <p>Then the practitioner's view of the authoritative-server model that a socket enables:
+  <a href="https://gafferongames.com/post/what_every_programmer_needs_to_know_about_game_networking/">Glenn
+  Fiedler, <em>What Every Programmer Needs To Know About Game Networking</em></a>.</p>
+
+  <p>Keep <a href="../reference/network-model.html">the network model cheat sheet</a> open
+  while you read the code &mdash; it has the full message table and the socket lifecycle on
+  one printable page.</p>
+
+  <h2 id="next"><span class="n">08</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong><a href="0002-the-fan-out.html">Lesson 2 &mdash; the fan-out</a>.</strong> You now know the server <em>can</em>
+    speak first. Next: how it decides who to speak to. The <code>tokio::select!</code> loop
+    in <code>client()</code>, the <code>watch</code> channel that carries no data at all, the
+    three values of <code>Effect</code>, and the question worth being able to answer cold
+    &mdash; <em>why does each connection build its own snapshot instead of the server
+    broadcasting one message to all of them?</em></p>
+    <p>Before then, one thing to try saying out loud: <strong>&ldquo;Berlin changed
+    something. Who tells Tokyo?&rdquo;</strong> &mdash; and then answer it, naming
+    <code>send_replace</code>.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>I am your teacher here, so ask.</strong> If anything above is hand-waved, push
+    on it &mdash; especially these three, which I left shallow on purpose: what happens when
+    a socket dies silently on a bad network; why the client checks <code>readyState</code>
+    before sending (<code>ServerConnection.ts:40</code>); and the thing
+    <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebSocket">MDN</a> warns about
+    that this client does not handle &mdash; the WebSocket API has <em>no backpressure</em>,
+    so a client that cannot keep up with snapshots will buffer them until it falls over. Ask
+    me about any of those and we will dig in.</p>
+  </div>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

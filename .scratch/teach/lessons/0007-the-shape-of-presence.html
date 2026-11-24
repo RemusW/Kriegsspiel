@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Shape of Presence</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0007 &middot; Kriegsspiel network model</p>
+  <h1>The shape of presence</h1>
+  <p class="standfirst">Six lessons of reading. This one is design: nothing in the repository
+  implements presence, and the five rules you wrote for it constrain the answer far more
+  tightly than they look. Follow them properly and most of the work turns out to be already
+  done &mdash; including the part you would expect to be hardest, which is what happens when
+  someone vanishes mid-drag.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="1">
+      <p class="prompt">Which strategy does <code>spring.ts</code> implement?</p>
+      <ul class="options">
+        <li>A filter chasing one target</li>
+        <li>Buffered interpolation of real samples</li>
+        <li>Dead reckoning from last velocity</li>
+        <li>Averaging over recent positions</li>
+      </ul>
+      <p class="why">A filter. One target, overwritten on every sync, no history kept &mdash;
+      which is why it is the only strategy compatible with dropping outdated updates.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">Where does per-frame state belong?</p>
+      <ul class="options">
+        <li>The store, with a memo guard</li>
+        <li>The engine: no DOM reads it</li>
+        <li>The store, for devtools support</li>
+        <li>The engine: three.js needs it</li>
+      </ul>
+      <p class="why">The engine, and the reason is that nothing rendered depends on it. &ldquo;A
+      library happens to hold it&rdquo; is a coincidence; the change rate and the absence of a
+      DOM reader are the argument.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Where is a departed umpire's state cleaned up?</p>
+      <ul class="options">
+        <li>In a periodic sweep task</li>
+        <li>When the next umpire connects</li>
+        <li>Where the connection loop exits</li>
+        <li>In Doc::edit, on the next edit</li>
+      </ul>
+      <p class="why">In <code>client()</code>, after <code>serve_client</code> returns &mdash;
+      the single point every exit from the loop passes through. Remember that this place
+      exists; it is about to matter again.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>The brief you already wrote</h2>
+
+  <p>Five rules, from the presence entry in <code>CLAUDE.md</code>. Read as a specification
+  rather than as notes, they rule out most of the obvious designs:</p>
+
+  <ol class="steps">
+    <li><strong>Not part of <code>Doc</code>.</strong> Not saved, not undoable, not an
+    <code>Edit</code>.</li>
+    <li><strong>Umpires only.</strong> A piece mid-drag shows where it is going, so it is
+    hidden information.</li>
+    <li><strong>Throttled</strong> to roughly 20 a second, smoothed by the receiver.</li>
+    <li><strong>Outdated updates dropped, never queued.</strong></li>
+    <li><strong>Show which pieces another umpire is holding</strong>, so two umpires do not
+    grab the same piece unawares.</li>
+  </ol>
+
+  <p>What is genuinely undecided: the channel it travels on, the payload, and what happens
+  when a sender disappears. Those three, in that order, because each constrains the next.</p>
+
+  <h2><span class="n">02</span>The decision that would quietly wreck it</h2>
+
+  <p>The tempting move is to reuse the machinery that already works. There is a channel that
+  wakes every connection when something changes, and presence is a change, so: send presence
+  through <code>changed</code>.</p>
+
+  <p>Do the arithmetic before you do anything else. <code>changed</code> carries
+  <code>()</code> &mdash; it is a doorbell, and what each connection does when it rings is
+  call <code>send_view</code>, which serialises <em>an entire board</em>. So a drag at
+  20&nbsp;Hz with three umpires connected is sixty whole-board snapshots a second, each one
+  cloned and serialised separately, to communicate a cursor.</p>
+
+  <div class="breaks">
+    <p>That is not a performance mistake, it is a category mistake, and it is the exact cost
+    the delta discussion in lesson 0002 was worried about &mdash; arriving through the back
+    door, in a design that never mentions deltas. <strong>Presence needs its own channel,
+    and unlike the doorbell it must carry data.</strong> Reusing the doorbell for a 20&nbsp;Hz
+    stream converts a human-paced snapshot system into a real-time one by accident.</p>
+  </div>
+
+  <h2><span class="n">03</span>The channel: one <code>watch</code>, carrying everyone</h2>
+
+  <p>Rule four decides this, and the choice is narrower than it looks. The two candidates
+  behave differently in a way worth getting exactly right.</p>
+
+  <p><strong><code>broadcast</code></strong> is a ring buffer with a cursor per receiver.
+  The tokio docs are explicit that it does not block the sender: &ldquo;if a value is sent
+  when the channel is at capacity, the oldest value currently held by the channel is
+  overwritten,&rdquo; and the slow receiver gets <code>RecvError::Lagged</code> carrying the
+  count it missed. So it does drop &mdash; but note <em>what the receiver then gets</em>: its
+  cursor moves to the <em>oldest retained value</em> and it carries on from there. A receiver
+  that falls behind replays a backlog of stale cursor positions before reaching the present.</p>
+
+  <p><strong><code>watch</code></strong> holds one value and nothing else. A receiver that
+  looks away and comes back sees the current state, with no backlog to walk through, because
+  there is no backlog.</p>
+
+  <p class="with-note">That is the distinction rule four is reaching for. It is not
+  &ldquo;broadcast queues and watch does not&rdquo; &mdash; both drop. It is that
+  <strong>broadcast preserves the sequence and watch preserves only the latest.</strong>
+  &ldquo;Drop outdated ones instead of queueing them&rdquo; is a request for the second.</p>
+  <p class="note">Worth being precise here because the sloppy version of this argument is
+  wrong, and you would be stating it in an interview. Broadcast is not badly behaved; it is
+  built to deliver a stream faithfully, which is not what you want.</p>
+
+  <p>So: a single <code>watch</code> carrying the whole presence map.</p>
+
+<pre><code>// On Game, beside doc, assets and changed.
+presence: watch::Sender&lt;HashMap&lt;UmpireId, Presence&gt;&gt;,</code></pre>
+
+  <p>One channel, one subscription per connection, latest-wins over the entire picture. The
+  shape is the one you already understand from <code>changed</code>, with a payload bolted on.
+  Two notes on using it:</p>
+
+  <ol class="steps">
+    <li>An update must mutate <em>one</em> entry and notify, so reach for
+    <code>send_modify</code> rather than read-clone-replace &mdash; the latter races two
+    umpires moving at once. Check its exact signature; I have not read it.</li>
+    <li>A receiver reads through a borrow guard, which is a lock. <strong>Never hold it across
+    an <code>await</code> on a socket write</strong> &mdash; the same discipline as every other
+    lock in this server, and the same mistake it would be.</li>
+  </ol>
+
+  <div class="callout">
+    <span class="label">Why whole-state is cheap here and expensive for boards</span>
+    <p>You rejected deltas and kept whole-board snapshots, then here you are sending the whole
+    presence map on every tick. Same principle, opposite cost, and the asymmetry is the point:
+    a presence map is a handful of umpires each holding a cursor and a few placements. A board
+    is every unit and every map sheet. Whole-state messaging is a question of payload size, not
+    of taste &mdash; which is why &ldquo;snapshots are fine&rdquo; and &ldquo;serialise once
+    per distinct view&rdquo; can both be true.</p>
+  </div>
+
+  <h2><span class="n">04</span>The payload: presence is an edit you have not sent</h2>
+
+  <p>Here is the observation that makes the rest of this easy. Rule five says to show which
+  pieces another umpire is holding, and your scenario notes want &ldquo;pieces moving while
+  another umpire drags them.&rdquo; So presence must carry <em>where the dragged pieces
+  currently are</em>.</p>
+
+  <p>You already have a type for that. <code>Placement</code>, with its doc comment: &ldquo;Every
+  value is absolute, so a command states the result it wants instead of how far a pointer or
+  key moved it.&rdquo; Which is exactly as true of a drag in progress as of the drag's final
+  command.</p>
+
+<pre><code>// Client &rarr; server, at most ~20 a second.
+Presence {
+    cursor: Option&lt;[f32; 2]&gt;,
+    holding: Vec&lt;Placement&gt;,
+}</code></pre>
+
+  <p class="with-note">So a drag is a stream of would-be <code>place</code> commands, of which
+  the last one is actually sent. <strong>Presence is the unsent prefix of an edit.</strong>
+  Not an analogy &mdash; literally the same data in the same type, the difference being that
+  one of them was committed.</p>
+  <p class="note">Which also explains why presence can never be an <code>Edit</code>: an
+  <code>Edit</code> is a before-and-after pair recorded for undo. These are proposals. The
+  distinction your rules draw is the distinction between a value and a decision.</p>
+
+  <p>And the consequences cascade pleasantly. <code>previewOf</code> already turns
+  <code>Placement[]</code> into a map of previews. <code>PendingEdits</code> already renders
+  edits that are not in any board. <code>PawnLayer</code> already springs smoothly towards
+  whatever targets it is handed. So the receiving side is:</p>
+
+  <ol class="steps">
+    <li>Feed another umpire's <code>holding</code> placements in as previews, alongside your
+    own pending edits.</li>
+    <li>Hand the result to <code>PawnLayer</code>, which smooths between the 20&nbsp;Hz
+    updates for free &mdash; lesson 0006's whole conclusion, collected here.</li>
+    <li>Mark those ids as lifted, so they visibly hang from someone's pointer.</li>
+  </ol>
+
+  <p><code>PendingEdits</code> shows edits <em>you</em> have asked for and not seen confirmed.
+  Presence shows edits <em>someone else</em> has not yet asked for at all. Same machinery, one
+  more source &mdash; which is why step three of that list is the twenty-line change worth
+  building first.</p>
+
+  <h2><span class="n">05</span>The sender that vanishes mid-drag</h2>
+
+  <p>The problem that sounds worst: an umpire's laptop lid closes while they are holding three
+  pieces. There is no close event for a held piece. Does everyone else see those pieces hanging
+  in the air for ever?</p>
+
+  <p>No, and you already built the fix in this session without knowing it. The cleanup point in
+  <code>client()</code> runs on <em>every</em> exit from the loop &mdash; close frame, socket
+  error, or the stream simply ending. One more line beside the one that is already there:</p>
+
+<pre><code>serve_client(&amp;mut socket, &amp;game, umpire).await;
+game.forget_umpire(umpire).await;      // undo history
+game.forget_presence(umpire).await;    // cursor and held pieces</code></pre>
+
+  <p>That is the normal case closed completely, and it is closed <em>structurally</em>: there
+  is no code path where a connection ends and this does not run. Having one exit point rather
+  than five is what makes that statement provable instead of hopeful.</p>
+
+  <p class="with-note">The case it does <em>not</em> close is a half-open connection &mdash; the
+  peer gone without a FIN, where the socket stays notionally alive until a keepalive or TCP
+  timeout decides otherwise, which can be minutes. <code>client()</code> has not returned, so
+  nothing has been forgotten, and the ghost cursor sits there.</p>
+  <p class="note">This is the honest limit of structural cleanup, and it is not specific to
+  presence &mdash; it is why real systems have heartbeats. Worth knowing that your
+  <code>forget</code> line is correct and still insufficient on its own.</p>
+
+  <p>The cheap second layer: stamp each entry with when it last arrived, and have receivers
+  ignore entries older than a couple of seconds. That is the same self-healing posture as
+  everything else here &mdash; nothing has to notice the failure, the display simply stops
+  being wrong. Note the ordering: structural cleanup is the mechanism, staleness is the
+  fallback. Doing it the other way round &mdash; relying on staleness alone &mdash; would leave
+  a two-second ghost on every ordinary disconnect.</p>
+
+  <h2><span class="n">06</span>One message, two destinations</h2>
+
+  <p>On the client, lesson 0005's rule applies to the arriving message itself, and splits it:</p>
+
+  <table>
+    <tbody>
+      <tr><td style="width:12rem"><strong>Cursors and placements</strong></td><td>change 20
+      times a second, drawn on the canvas, no DOM node reads them. <em>Engine</em>, beside
+      <code>PendingEdits</code>.</td></tr>
+      <tr><td><strong>Who is connected</strong></td><td>changes when someone joins or leaves,
+      and you will want it in the UI as a list of names. <em>Store.</em></td></tr>
+    </tbody>
+  </table>
+
+  <p>Worth noticing that this is the first message in the protocol whose parts belong in
+  different places. The split is not an awkwardness to design around &mdash; it falls straight
+  out of asking the change-rate question of each field separately, which is what the rule is
+  for.</p>
+
+  <h2><span class="n">07</span>The gate that does not exist yet</h2>
+
+  <p>Rule two says presence never reaches a player. Today that is satisfied for an
+  uncomfortable reason: <strong>there are no players.</strong> Every connection is an umpire,
+  so there is nobody to leak to.</p>
+
+  <p>Which makes this an ordering hazard rather than a bug. The moment a player role exists,
+  presence becomes hidden information with no gate in front of it, and hidden information
+  leaking is the one failure this project treats as unacceptable &mdash; your architecture
+  rules already say to filter on the server and never to send a full board for the client to
+  hide. Presence must go through the same single filtering function, for the same reason, and
+  it must get there before players do, not after.</p>
+
+  <h2><span class="n">08</span>Recall</h2>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="4">
+      <p class="prompt">Why must presence not use the <code>changed</code> channel?</p>
+      <ul class="options">
+        <li>It carries no data payload</li>
+        <li>It coalesces and would drop updates</li>
+        <li>It wakes players as well</li>
+        <li>It would send whole snapshots</li>
+      </ul>
+      <p class="why">Because ringing that doorbell makes every connection serialise a whole
+      board. Option one is true but fixable; option two describes behaviour you actually
+      want.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">What does <code>watch</code> give that <code>broadcast</code> does not?</p>
+      <ul class="options">
+        <li>Only ever the current value</li>
+        <li>Delivery without any cloning cost</li>
+        <li>A separate queue per receiver</li>
+        <li>Notification of dropped messages</li>
+      </ul>
+      <p class="why">Latest-only. Both drop under load; the difference is that a lagging
+      broadcast receiver resumes from the oldest retained value and walks a backlog of stale
+      positions.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">What type should <code>holding</code> carry?</p>
+      <ul class="options">
+        <li>A list of unit ids</li>
+        <li>Positions keyed by unit id</li>
+        <li>The same Placement as place</li>
+        <li>A delta since the last frame</li>
+      </ul>
+      <p class="why"><code>Placement</code>, unchanged. A drag in progress is a stream of
+      would-be commands, so it carries the command's own type &mdash; absolute, idempotent,
+      already generated by <code>previewOf</code>.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What clears presence when a sender vanishes?</p>
+      <ul class="options">
+        <li>A close frame from the client</li>
+        <li>The connection loop's exit path</li>
+        <li>The next snapshot that is sent</li>
+        <li>A timeout on the watch channel</li>
+      </ul>
+      <p class="why">The exit path, which runs however the loop ends &mdash; no close frame
+      required. A staleness timeout is the second layer, for half-open connections only.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Why is presence safe from players today?</p>
+      <ul class="options">
+        <li>The server filters it already</li>
+        <li>Effect::Everyone excludes player roles</li>
+        <li>No player role exists yet</li>
+        <li>Doc::shown removes it for them</li>
+      </ul>
+      <p class="why">Because there are no players. That is an ordering hazard, not a defence:
+      the gate has to exist before the role does.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">09</span>Drill: design judgment</h2>
+
+  <p>No lookups here &mdash; each of these follows from a rule you wrote.</p>
+
+  <ol class="quiz" data-label="Judgment">
+    <li class="q" data-answer="3">
+      <p class="prompt">An umpire's cursor stops moving for ten seconds.</p>
+      <ul class="options">
+        <li>Nothing: drop the stale entry</li>
+        <li>The cursor fading out slowly</li>
+        <li>The last position it reported</li>
+        <li>Its position, extrapolated forward</li>
+      </ul>
+      <p class="why">Keep showing it. A resting cursor is real information &mdash; someone is
+      there, thinking. This is why the staleness window is seconds rather than milliseconds: it
+      must distinguish &ldquo;not moving&rdquo; from &ldquo;gone&rdquo;, and only the second is
+      a failure.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">Two umpires grab the same piece at once.</p>
+      <ul class="options">
+        <li>Refuse the second umpire's drag</li>
+        <li>Allow both; undo sorts it out</li>
+        <li>Lock the piece on the server</li>
+        <li>Show a warning and continue</li>
+      </ul>
+      <p class="why">Allow both &mdash; your own note says &ldquo;if they do, per-umpire undo
+      already copes with the result.&rdquo; A server-side lock would need a new authority
+      concept <em>and</em> a release-on-disconnect path, which is the kind of state you have
+      spent this whole session avoiding. Presence makes the collision visible; it does not have
+      to prevent it.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">Presence arrives while you are viewing a past turn.</p>
+      <ul class="options">
+        <li>Apply it: presence is not Doc</li>
+        <li>Queue it until returning to live</li>
+        <li>Refuse it with an error reply</li>
+        <li>Ignore it: the view is read-only</li>
+      </ul>
+      <p class="why">Ignore it while the past is on screen. Those cursors are pointing at the
+      live board, so drawing them over a recorded turn puts them in a world that does not
+      exist. Queueing breaks rule four, and refusing makes no sense &mdash; presence has no
+      replies, by design.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">10</span>Read this next</h2>
+
+  <p><a href="https://docs.rs/tokio/latest/tokio/sync/broadcast/index.html">Tokio
+  &mdash; <code>sync::broadcast</code></a>, specifically the lagging section. Short, and the
+  only way to hold the <code>watch</code>-versus-<code>broadcast</code> argument honestly: read
+  what <code>Lagged</code> actually does before claiming either channel &ldquo;queues&rdquo;.
+  The sentence that matters is that returning <code>Lagged</code> &ldquo;does not close or
+  disconnect the receiver&rdquo; &mdash; it carries on from the oldest value it still holds,
+  which is the behaviour your rule four is quietly rejecting.</p>
+
+  <p class="with-note">Then reread the presence entry in your own <code>CLAUDE.md</code>, which
+  is the real primary source for this lesson. It is five bullets written before any of this
+  existed, and it determined almost every answer above. Worth noticing how much work a
+  well-written constraint does later.</p>
+  <p class="note">If you build this, that entry should move out of open questions and into
+  Decisions with an ADR, and the smoothing choice it leaves implicit ought to be named.</p>
+
+  <h2 id="next"><span class="n">11</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong>The series has caught up with the code.</strong> Seven lessons have covered why
+    a socket, the fan-out, the client's lie, identity, where state lives, smoothing, and now
+    presence &mdash; which is the last thing with enough design already written down to teach
+    from. Three honest directions from here, and this one is yours to pick:</p>
+    <p><strong>Build it</strong> &mdash; and this is the one you took:
+    <a href="0008-build-the-presence-channel.html">0008</a> hands this design back as an
+    exercise with tests, scoped to held pieces rather than cursors. One correction it makes to
+    this lesson: the &ldquo;twenty-line version&rdquo; was only the drawing half, and the wire
+    carries the union of what the others hold rather than a map keyed by umpire, which keeps
+    <code>UmpireId</code> out of the protocol.</p>
+    <p><strong>Go deeper on one gap.</strong> Why <code>PendingEdits</code> structurally cannot
+    cover spawns and deletions is the best remaining hole in the optimistic-update story, and
+    it is a lesson rather than a paragraph.</p>
+    <p><strong>Leave the repo.</strong> The transferable half: backpressure, heartbeats and
+    what actually happens to a WebSocket over a long-haul link through proxies &mdash; which
+    <code>RESOURCES.md</code> still lists as a gap, and which the worldwide-play assumption in
+    <code>CLAUDE.md</code> rests on entirely.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> On this lesson specifically: <em>whether presence should be one
+    message or two</em> (roster and cursors have different rates, and section 06 splits them on
+    arrival rather than on the wire &mdash; there is an argument for splitting earlier).
+    <em>Whether the server should validate presence at all</em>, given that it validates every
+    command but presence changes nothing. And <em>whether a remotely-held piece should be
+    sprung or snapped</em>, which 0006 left open and which this design makes answerable.</p>
+    <p>Two things in here are unverified and marked as such: <code>send_modify</code>'s
+    signature, and the claim that one borrow guard is the right receiver pattern. Check both
+    against the docs before building.</p>
+  </div>
+
+  <p class="srcline" style="margin-top:3rem">
+    <a href="../reference/network-model.html">Cheat sheet</a> &middot;
+    <a href="0006-smoothing-what-arrives-late.html">&larr; 0006 Smoothing what arrives late</a> &middot;
+    <a href="../GLOSSARY.md">Glossary</a>
+  </p>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

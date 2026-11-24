@@ -31,7 +31,7 @@ dist-ssr
 client/assets/*.ksg
 
 # Local issue tracker (docs/agents/issue-tracker.md); kept out of git for now.
-.scratch/
-docs/
-GLOSSARY.md
-CLAUDE.md
+# .scratch/
+# docs/
+# GLOSSARY.md
+# CLAUDE.md

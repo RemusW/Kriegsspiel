@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smoothing What Arrives Late</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0006 &middot; Kriegsspiel network model</p>
+  <h1>Smoothing what arrives late</h1>
+  <p class="standfirst">Updates arrive in lumps. The screen draws continuously. Everything in
+  between is invented, and there are exactly two respectable ways to invent it. You have
+  already built one of them, for a different reason, without calling it by its networking
+  name &mdash; and your own notes have already ruled out the other. This lesson is mostly
+  about recognising what you have.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="2">
+      <p class="prompt">A store is best described as which of these?</p>
+      <ul class="options">
+        <li>A cache of server state</li>
+        <li>A subscription list, not storage</li>
+        <li>The single source of truth</li>
+        <li>A place for shared values</li>
+      </ul>
+      <p class="why">A subscription. The storage is free; the notification is the price, which
+      is why the change rate of a value decides where it belongs.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Why were per-unit deltas rejected?</p>
+      <ul class="options">
+        <li>Snapshots compress better over sockets</li>
+        <li>The client cannot apply them correctly</li>
+        <li>A delta needs every earlier one</li>
+        <li>Serialization costs would have risen</li>
+      </ul>
+      <p class="why">A delta is only correct for a client holding every earlier one, and the
+      watch channel's coalescing deliberately will not promise that. Hold on to this
+      shape &mdash; it reappears below.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">What is on screen partway through a drag?</p>
+      <ul class="options">
+        <li>The board plus pending edits</li>
+        <li>The server's latest board alone</li>
+        <li>The engine's own copy of Doc</li>
+        <li>Whatever the springs have reached</li>
+      </ul>
+      <p class="why">Board plus <code>PendingEdits</code>, which is what picking and every new
+      edit measure against. The springs are a fourth thing again &mdash; what is
+      <em>drawn</em> &mdash; and this lesson is about that gap.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>The gap nobody can avoid</h2>
+
+  <p>Any networked display has the same hole in it. Authoritative state arrives at some
+  discrete rate &mdash; for your boards, whenever a human does something; for presence, a
+  planned twenty times a second. The screen asks what to draw sixty or a hundred and
+  forty-four times a second. Between two updates, <em>every frame is a guess</em>.</p>
+
+  <p>Snapping to the latest value is the one answer that is always wrong. Gambetta puts the
+  symptom plainly: you get &ldquo;players who teleport short distances every 100&nbsp;ms.&rdquo;
+  The discreteness of the network becomes visible in the motion, which is the one place it
+  must never show up.</p>
+
+  <p>So you invent the in-between. Two strategies, and they differ in what they are willing to
+  be wrong about.</p>
+
+  <h2><span class="n">02</span>Strategy one: render the past</h2>
+
+  <p>This is <strong>entity interpolation</strong>, and the trick is in the name of the
+  trade-off rather than the maths. From
+  <a href="https://www.gabrielgambetta.com/entity-interpolation.html">Gambetta, Part III</a>:</p>
+
+  <p class="with-note">&ldquo;The key to the solution is to show the other players <em>in the
+  past</em> relative to the user&rsquo;s player. [&hellip;] This way you&rsquo;re always
+  showing the user <em>actual movement data</em>, except you&rsquo;re showing it 100&nbsp;ms
+  &lsquo;late&rsquo;.&rdquo;</p>
+  <p class="note">The deciding property, stated on the same page: interpolation &ldquo;uses
+  only real entity data provided by the server.&rdquo; It never guesses a position that was
+  not sent.</p>
+
+  <p>You hold a buffer of timestamped samples and draw at <code>now &minus; delay</code>,
+  between the two samples that straddle it. The path on screen is exactly the path the server
+  described. You pay for that with a fixed added latency, and with state: at minimum two
+  timestamped samples per entity, and a clock you trust.</p>
+
+  <p>Its documented costs are worth reading as a checklist, because for you three of the four
+  land harmlessly. &ldquo;Every player sees a slightly different rendering of the game
+  world&rdquo; &mdash; fine, umpires are not competing. But: &ldquo;the illusion breaks down
+  when an event needs high spatial and temporal accuracy, such as shooting at a moving
+  target,&rdquo; because &ldquo;you&rsquo;re shooting where your target was 100&nbsp;ms
+  ago.&rdquo; You have no such event. Nothing in Kriegsspiel resolves against a moving
+  position.</p>
+
+  <h2><span class="n">03</span>Strategy two: chase the latest</h2>
+
+  <p>The other answer keeps no history at all. Hold one target, move towards it continuously,
+  and when a new update arrives simply replace the target. A low-pass filter on a sequence of
+  setpoints.</p>
+
+  <p>You wrote this months ago. <code>PawnLayer.sync</code>, once per board:</p>
+
+  <p class="srcline">client/src/engine/pawns/PawnLayer.ts:150</p>
+
+<pre><code>view.motion.target = unit;</code></pre>
+
+  <p>One assignment. No array, no timestamp, no buffer &mdash; the previous target is simply
+  gone. Then <code>step</code> walks each spring towards it at a fixed 240&nbsp;Hz, and
+  <code>update</code> drains an accumulator so the behaviour is frame-rate independent.</p>
+
+  <div class="callout">
+    <span class="label">The recognition</span>
+    <p><code>spring.ts</code> is not &ldquo;animation code that happens to sit near the
+    network layer&rdquo;. It is a complete implementation of the second smoothing strategy,
+    and the only reason it does not look like networking code is that you built it to make
+    blocks feel physical. The network benefit was free. <em>A remote umpire's edit slides in
+    rather than teleporting, and that was never the feature you were writing.</em></p>
+  </div>
+
+  <p class="with-note">And your own doc comment already states the invariant that makes it
+  safe: the units&rsquo; positions &ldquo;are the targets, so a block may trail its unit for a
+  moment but never changes where the unit is.&rdquo;</p>
+  <p class="note">That sentence is the drawing/truth separation, written down before you had a
+  name for why it mattered. Picking and editing read the unit; only the eye reads the
+  spring.</p>
+
+  <h2><span class="n">04</span>Your notes already chose, and did not say so</h2>
+
+  <p>Here is the finding. The presence section of <code>CLAUDE.md</code> lists four rules.
+  One of them is:</p>
+
+  <p class="with-note">&ldquo;Throttle updates (a starting guess is around 20 a second), let
+  the receiving engine smooth between them, and <strong>drop outdated ones instead of queueing
+  them</strong>.&rdquo;</p>
+  <p class="note"><code>CLAUDE.md</code>, open questions, presence.</p>
+
+  <p>Read that against strategy one. Entity interpolation <em>is</em> a queue &mdash; it
+  cannot function without retaining at least two timestamped samples, because interpolating
+  between them is the entire mechanism. &ldquo;Drop outdated ones instead of queueing
+  them&rdquo; does not merely discourage interpolation. It forbids it.</p>
+
+  <p>So the decision is already made, implicitly, in a line written about bandwidth rather
+  than about smoothing. Worth making explicit, because right now the file says &ldquo;let the
+  receiving engine smooth between them&rdquo; without saying how, and the how is already in
+  the repository.</p>
+
+  <div class="breaks">
+    <p><strong>This is the third time the same commitment has decided something.</strong> The
+    watch channel coalesces, so deltas cannot work (0002). A reconnecting client replays
+    nothing, because absolute state supersedes it (0004). Presence drops outdated updates, so
+    interpolation cannot work (0006). One architectural choice &mdash; <em>latest state wins,
+    history is not retained in transit</em> &mdash; and every technique that needs a sequence
+    collides with it. That sentence is the spine of this whole system, and it is a better
+    answer to &ldquo;tell me about your architecture&rdquo; than any feature list.</p>
+  </div>
+
+  <h2><span class="n">05</span>What you give up, stated honestly</h2>
+
+  <p>One thing, and it is exactly the property Gambetta highlights: <strong>fidelity to the
+  path that was actually sent.</strong> A spring is a filter. It rounds corners, lags by an
+  amount that varies with speed, and keeps approaching after the updates stop. The motion on
+  screen is plausible rather than real.</p>
+
+  <p>For an umpire's cursor and a piece being dragged, nobody will ever audit the path. The
+  questions that matter are: does it look continuous, does it end up in the right place, and
+  is it current enough that two umpires do not grab the same piece unawares. A spring answers
+  all three, with no added delay and no clock.</p>
+
+  <p>Where it would stop being adequate &mdash; worth knowing the boundary rather than
+  discovering it:</p>
+
+  <ol class="steps">
+    <li><strong>Animating a recorded turn.</strong> If you ever play turns back as motion
+    rather than as stills, the path <em>is</em> the content. That wants interpolation, and
+    turns already carry <code>recordedAt</code>.</li>
+    <li><strong>Anything resolved against a moving position.</strong> You have none today. The
+    Lua scripting goal could introduce one.</li>
+    <li><strong>Replays or spectating.</strong> Same reason: a filter cannot reconstruct what
+    it filtered.</li>
+  </ol>
+
+  <h2><span class="n">06</span>The arithmetic to do before you trust it</h2>
+
+  <p>A spring tuned for one update rate is not automatically right for another, and
+  <code>FOLLOW</code> was tuned for boards, which arrive at human pace.</p>
+
+  <p class="srcline">client/src/engine/pawns/PawnLayer.ts:39</p>
+
+<pre><code>const FOLLOW: SpringTune = { frequency: 9, damping: 0.85 };</code></pre>
+
+  <p class="with-note">The envelope decays as <code>e^(&minus;&zeta;&omega;t)</code>, so with
+  &omega; = 2&pi;&middot;9 &asymp; 56.5 and &zeta; = 0.85 the time constant is about
+  21&nbsp;ms, and the spring is roughly 95% of the way there after about 63&nbsp;ms. Presence
+  at 20&nbsp;Hz means a new target every 50&nbsp;ms.</p>
+  <p class="note">An estimate from the constants, not a measurement &mdash; this file's own
+  convention is to say which. Treat it as a prediction to check, not a result.</p>
+
+  <p>Which puts you, just barely, in the good regime: the next target lands at 50&nbsp;ms
+  while the spring is still travelling, so the motion never arrives and waits. That is what
+  continuous movement requires. But the margin is thin, and it gives you a falsifiable
+  prediction worth testing: <strong>drop presence to 10&nbsp;Hz and the spring should reach its
+  target around 63&nbsp;ms and then sit still for roughly 37&nbsp;ms, which reads as
+  stop-start.</strong></p>
+
+  <p>The conclusion that transfers: <em>the filter's settle time and the update interval are
+  one decision, not two.</em> If presence ends up throttled harder than 20&nbsp;Hz to save
+  bandwidth, the spring must soften to match, or you will have bought smoothness and
+  spent it.</p>
+
+  <h2><span class="n">07</span>So what is actually missing</h2>
+
+  <p>Almost none of the smoothing. Two other things, and naming them is the practical point of
+  this lesson.</p>
+
+  <ol class="steps">
+    <li><strong><code>lifted</code> only knows about you.</strong> The engine passes
+    <code>this.manipulation?.lifted()</code> &mdash; the pieces <em>this</em> client is
+    dragging. Presence needs the same visual from a different source: lifted because someone
+    else is holding it. The spring, the tilt and the lean all work already; what is missing is
+    a second input to that set.</li>
+    <li><strong>A cursor is not a unit.</strong> <code>PawnLayer</code> keys one view per unit
+    id and deletes views for ids that vanish from the board. Presence cursors are not on the
+    board and never will be, so they need a layer of their own &mdash; keyed by umpire, not by
+    unit, which lands you back on identity.</li>
+  </ol>
+
+  <p>Hence the ordering, which is the same one your suggested-order-of-work already implies:
+  <strong>identity, then presence, and smoothing comes along for free.</strong> Presence
+  cannot attribute a cursor to anyone until an umpire is more than a connection number, and
+  &ldquo;show which pieces another umpire is holding&rdquo; is a sentence about identity
+  wearing a rendering costume.</p>
+
+  <h2><span class="n">08</span>Recall</h2>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="3">
+      <p class="prompt">What does entity interpolation put on screen?</p>
+      <ul class="options">
+        <li>The latest position, smoothed out</li>
+        <li>A prediction of where entities go</li>
+        <li>Real server data, shown late</li>
+        <li>The average of recent samples</li>
+      </ul>
+      <p class="why">Only data the server actually sent, delayed. It guesses nothing &mdash;
+      that is the whole point, and the reason it needs a buffer.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What does a spring in <code>PawnLayer</code> chase?</p>
+      <ul class="options">
+        <li>A buffer of timestamped samples</li>
+        <li>One target, overwritten each sync</li>
+        <li>The velocity of the last update</li>
+        <li>Two positions and a timestamp</li>
+      </ul>
+      <p class="why">One target. <code>view.motion.target = unit</code> discards the previous
+      one, which is precisely why no queue is needed and precisely why the exact path is
+      unrecoverable.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">Which presence rule rules out interpolation?</p>
+      <ul class="options">
+        <li>Presence is never part of Doc</li>
+        <li>Throttle updates to twenty a second</li>
+        <li>Never forward presence to players</li>
+        <li>Drop outdated updates, never queue</li>
+      </ul>
+      <p class="why">All four are real rules; only the last one is structural here.
+      Interpolation <em>is</em> a queue of timestamped samples, so forbidding the queue
+      forbids the technique.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">What does the spring give up?</p>
+      <ul class="options">
+        <li>Exact fidelity to the sent path</li>
+        <li>Smoothness between discrete updates</li>
+        <li>Independence from the frame rate</li>
+        <li>Correctness of the final position</li>
+      </ul>
+      <p class="why">The path only. It still converges on the right place, and the fixed
+      240&nbsp;Hz step keeps it frame-rate independent. A filter cannot reconstruct what it
+      filtered.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Why is <code>lifted</code> not ready for presence?</p>
+      <ul class="options">
+        <li>It is keyed by umpire already</li>
+        <li>Springs cannot express a lift</li>
+        <li>It reads only local manipulation</li>
+        <li>Players would see held pieces</li>
+      </ul>
+      <p class="why">It comes from <code>this.manipulation</code>, so it only ever describes
+      what this client is dragging. The rendering is done; the second input is not.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">09</span>Drill: buffer, or spring?</h2>
+
+  <p>Pick the strategy <em>and</em> the reason. Several wrong options give the right strategy.</p>
+
+  <ol class="quiz" data-label="Judgment">
+    <li class="q" data-answer="4">
+      <p class="prompt">Another umpire's cursor, arriving at 20&nbsp;Hz.</p>
+      <ul class="options">
+        <li>Buffer: the path must match</li>
+        <li>Buffer: timestamps already exist</li>
+        <li>Spring: it arrives already smooth</li>
+        <li>Spring: nobody audits the path</li>
+      </ul>
+      <p class="why">Spring, because path fidelity buys nothing here. Note the trap in option
+      three: it does <em>not</em> arrive smooth &mdash; it arrives twenty times a second, which
+      is exactly the problem being solved.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Playing a recorded turn back as motion.</p>
+      <ul class="options">
+        <li>Spring: the tuning already exists</li>
+        <li>Spring: boards arrive human-paced</li>
+        <li>Buffer: exact path would matter</li>
+        <li>Buffer: turns carry no timestamps</li>
+      </ul>
+      <p class="why">Buffer, because here the path <em>is</em> the content rather than a
+      cosmetic. Option four is simply false &mdash; every turn carries
+      <code>recordedAt</code>, which is what would make this feasible.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">A board arriving after another umpire's edit.</p>
+      <ul class="options">
+        <li>Buffer: two boards must blend</li>
+        <li>Spring: one latest target suffices</li>
+        <li>Buffer: coalescing loses the path</li>
+        <li>Spring: edits are always absolute</li>
+      </ul>
+      <p class="why">Spring, and this is what ships today. Option three states something true
+      &mdash; coalescing does lose intermediate boards &mdash; but draws the wrong conclusion:
+      that is a reason a buffer <em>cannot</em> work, not a reason to want one.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">10</span>Read this next</h2>
+
+  <p><a href="https://www.gabrielgambetta.com/entity-interpolation.html">Gabriel Gambetta,
+  Fast-Paced Multiplayer Part III: Entity Interpolation</a>. Short, and the clearest statement
+  of the trade anywhere. Read it against one question: <em>which of its assumptions do you
+  actually have?</em> It is written for a shooter, where positions are contested and resolved
+  against, and almost every argument in it rests on that. Noticing which arguments survive the
+  move to a turn-based planning tool is the skill, more than the technique itself.</p>
+
+  <p class="with-note">Part I and Part II are worth rereading now too, because lesson 0003
+  drew the line between what they describe and what you built &mdash; client-side prediction
+  with reconciliation, against your optimistic update. The three parts together are the
+  canonical sequence, and you have now deliberately declined two of the three.</p>
+  <p class="note">That is not a gap. Declining a technique for a stated reason is a stronger
+  position than adopting it by default, and it is a much better interview answer.</p>
+
+  <h2 id="next"><span class="n">11</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong><a href="0007-the-shape-of-presence.html">Lesson 7 &mdash; the shape of
+    presence</a>.</strong> Everything above says
+    what presence must respect; nothing yet says what it looks like on the wire. That is the
+    first design in this series you would be writing rather than reading, and it is a good one:
+    it must not be an <code>Edit</code>, must not touch <code>Doc</code>, must never reach a
+    player, must coalesce per sender, and must survive its sender vanishing mid-drag. The last
+    of those is the interesting one &mdash; there is no <code>close</code> event for a dropped
+    piece.</p>
+    <p>To say out loud before then: <strong>"latest state wins, so any technique that needs the
+    sequence &mdash; deltas, replay, interpolation &mdash; is already ruled out"</strong>.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> Three worth pushing on. <em>Whether to make the smoothing
+    choice explicit in <code>CLAUDE.md</code></em>, since the file currently says &ldquo;let
+    the receiving engine smooth between them&rdquo; without naming how, and the answer already
+    exists in the repo. <em>Whether a held piece should be sprung at all</em> for a remote
+    drag, or snapped &mdash; there is a real argument that a lifted piece wants to be exactly
+    where the other umpire's pointer is. And <em>the second input to <code>lifted</code></em>,
+    which is twenty lines and the smallest useful piece of presence you could actually build
+    first.</p>
+    <p>And as ever: check the arithmetic in section 06 against a running app before believing
+    it. It is derived, not measured.</p>
+  </div>
+
+  <p class="srcline" style="margin-top:3rem">
+    <a href="../reference/network-model.html">Cheat sheet</a> &middot;
+    <a href="0005-where-state-lives.html">&larr; 0005 Where state lives</a> &middot;
+    <a href="../GLOSSARY.md">Glossary</a>
+  </p>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where State Lives</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0005 &middot; Kriegsspiel network model</p>
+  <h1>Where state lives</h1>
+  <p class="standfirst"><code>PendingEdits</code> is unmistakably state: a mutable
+  <code>Map</code>, read every frame, deciding what is on screen. It is not in your store.
+  Four lessons have used it without asking why, and the answer is the one piece of React
+  worth properly understanding &mdash; because a store is not a place to keep things. It is a
+  list of who to wake.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="3">
+      <p class="prompt">What does the same-origin policy do for your WebSocket?</p>
+      <ul class="options">
+        <li>It blocks cross-origin socket opens</li>
+        <li>It triggers a preflight request first</li>
+        <li>It does nothing at all</li>
+        <li>It applies only to text frames</li>
+      </ul>
+      <p class="why">Nothing. It does not apply to WebSockets, there is no preflight, and CORS
+      is never consulted. RFC 6455 &sect;10.2 hands the duty to the server, which is why
+      <code>upgrade()</code> has to check <code>Origin</code> itself.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">Why does a <code>place</code> command carry absolute values?</p>
+      <ul class="options">
+        <li>Deltas would need more bandwidth</li>
+        <li>A repeat states the same result</li>
+        <li>Rounding errors would accumulate faster</li>
+        <li>The server cannot compute offsets</li>
+      </ul>
+      <p class="why">Idempotence. A command says what it wants to be true, not how far
+      something moved, so sending it twice is harmless and a lost one can be re-sent without
+      doubling anything.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">What does <code>Doc::forget_umpire</code> now guarantee?</p>
+      <ul class="options">
+        <li>Pending edits are discarded on reconnect</li>
+        <li>Another umpire cannot undo your work</li>
+        <li>Snapshots stop being sent to it</li>
+        <li>A reconnecting umpire starts with nothing</li>
+      </ul>
+      <p class="why">That history lasts exactly as long as the connection (ADR 0018). Today it
+      collects something unreachable; once an id can come back, it is the thing that
+      <em>enforces</em> the rule.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>The question, put properly</h2>
+
+  <p>Your own architecture decision says it plainly:</p>
+
+  <p class="with-note">&ldquo;Per-frame data (camera, drag positions, presence) stays inside
+  the engine, as does <code>PendingEdits</code>.&rdquo;</p>
+  <p class="note">ADR 0019, client state.</p>
+
+  <p>Read as a rule that is easy to follow and hard to justify. <code>selection</code> is in
+  the store. <code>board</code> is in the store. Both are &ldquo;data the client holds&rdquo;,
+  and so is <code>PendingEdits</code>. If the store is where client state goes, leaving one
+  map out of it looks like an exception someone made for convenience.</p>
+
+  <p>It is not. The three live in different places because <strong>putting something in a
+  store is not an act of storage. It is an act of subscription.</strong> Everything below is
+  that one sentence, unpacked.</p>
+
+  <h2><span class="n">02</span>What a React render actually is</h2>
+
+  <p>You know a frame loop. Yours is in <code>KriegsspielEngine.render</code>, driven by
+  <code>setAnimationLoop</code>, and the springs under it step at a fixed 240&nbsp;Hz. Its
+  shape: <em>you</em> decide when to draw, you draw everything, and you do it again. Drawing
+  a frame identical to the last one is completely normal and costs exactly what any other
+  frame costs.</p>
+
+  <p>React inverts the control. You never call render. You <em>invalidate</em>, and React
+  decides. The official description names three steps
+  (<a href="https://react.dev/learn/render-and-commit">React docs, Render and Commit</a>):</p>
+
+  <ol class="steps">
+    <li><strong>Trigger.</strong> &ldquo;Updating your component&rsquo;s state automatically
+    queues a render.&rdquo; Nothing else does, besides the first mount.</li>
+    <li><strong>Render.</strong> &ldquo;Rendering is React calling your components.&rdquo;
+    Your function bodies run again, return fresh JSX, and React works out what changed.</li>
+    <li><strong>Commit.</strong> React writes to the DOM &mdash; and only the parts that
+    differ. &ldquo;React does not touch the DOM if the rendering result is the same as last
+    time.&rdquo;</li>
+  </ol>
+
+  <p>Now the disanalogy, which matters more than the analogy. A frame loop is <em>pull</em> at
+  a fixed rate: cost is flat, and how often your data changes is irrelevant to it. React is
+  <em>push</em> at whatever rate you trigger it: cost is zero when nothing changes and the
+  whole subscribed subtree when one value does.</p>
+
+  <div class="callout">
+    <span class="label">The consequence worth keeping</span>
+    <p>In a frame loop, &ldquo;how often does this change?&rdquo; is a free question &mdash;
+    you redraw regardless. In React it is <em>the</em> question, because the change rate of a
+    value is the render rate of everything subscribed to it. Per-frame data in a push system
+    is a category error, not an optimisation problem.</p>
+  </div>
+
+  <h2><span class="n">03</span>So do the arithmetic</h2>
+
+  <p>Follow a drag. <code>Manipulation</code> calls <code>preview()</code>, which the engine
+  wires to two lines:</p>
+
+  <p class="srcline">client/src/engine/KriegsspielEngine.ts:199</p>
+
+<pre><code>preview: (edits) =&gt; {
+  this.pending.hold(edits);
+  this.refresh();
+},</code></pre>
+
+  <p class="with-note">And <code>refresh()</code> is called &ldquo;when a board arrives and
+  whenever a pending edit changes, which during a drag is every move of the pointer.&rdquo;
+  That is 60 to 120 times a second on ordinary hardware, and more on a high-rate mouse.</p>
+  <p class="note">Its own doc comment. Worth noticing that the comment states the frequency
+  &mdash; the author of that line knew the rate was the point.</p>
+
+  <p>Suppose <code>PendingEdits</code> lived in the store. Each pointer move becomes a
+  <code>set()</code>, which is a trigger, which wakes every component holding a
+  <code>useClientStore</code> subscription. Count them from
+  <code>GameScreen.tsx</code>: <code>connection</code>, <code>board.pawns</code>, plus
+  <code>Toolbar</code>, <code>Timeline</code> and <code>FileBar</code>. Your component
+  functions run, allocate JSX and get diffed, at pointer rate, for the length of every
+  drag.</p>
+
+  <p>Then React reaches the commit step and does <strong>nothing</strong>, correctly, because
+  no DOM node in your application depends on a pending edit. The board did not change. The
+  unit count did not change. The timeline did not change.</p>
+
+  <div class="breaks">
+    <p>That is the precise shape of the mistake, and it is sharper than &ldquo;it would be
+    slow&rdquo;: you would pay the trigger and the entire render phase to arrive at a commit
+    phase guaranteed in advance to be empty. One hundred per cent of the cost for a benefit
+    that is structurally zero &mdash; not usually zero, not zero on a fast machine. Zero by
+    construction, because React draws none of it. three.js does.</p>
+  </div>
+
+  <h2><span class="n">04</span>The receipt is already in your store</h2>
+
+  <p>This is not a theoretical force, and you do not have to take my word for it, because you
+  have already paid it twice &mdash; in <code>showView</code>, the function that writes each
+  arriving snapshot into the store:</p>
+
+  <p class="srcline">client/src/state/store.ts:105</p>
+
+<pre><code>const kept = state.selection.filter((id) =&gt; ids.has(id));
+// Keep the old array when nothing was dropped, so subscribers see no selection change.
+const selection =
+  kept.length === state.selection.length ? state.selection : kept;</code></pre>
+
+  <p>And its neighbour <code>sameTurns</code>, which walks the whole turn list comparing
+  fields so it can hand back the <em>old</em> array when they agree. Its comment says why:
+  &ldquo;the timeline then re-renders when the history does, not on every edit anyone
+  makes.&rdquo;</p>
+
+  <p>Look at what those two are. Hand-written memoisation, guarding reference identity,
+  because React and Zustand compare with <code>===</code> and a fresh array that means the
+  same thing still counts as a change. Neither line is about correctness. Both exist
+  <em>only</em> because the value is in the store, and both would be deleted if it were
+  not.</p>
+
+  <p class="with-note">That is the membership fee. <code>selection</code> and
+  <code>turns</code> pay it because React genuinely needs them. <code>PendingEdits</code>
+  does not pay it, because it never joined.</p>
+  <p class="note">The same discipline appears on the engine side, in
+  <code>applyTo</code>: <code>if (this.edits.size === 0) return units;</code> &mdash; the
+  identical array back when nothing is pending, so a downstream <code>!==</code> check stays
+  meaningful. Reference identity is load-bearing on both sides of the seam.</p>
+
+  <h2><span class="n">05</span>The rule, in a form that transfers</h2>
+
+  <p>Three questions, asked in this order. The first &ldquo;no&rdquo; decides it.</p>
+
+  <ol class="steps">
+    <li><strong>How often does it change?</strong> Pointer rate or frame rate &rarr; not in
+    the store, and stop here.</li>
+    <li><strong>Does any rendered output depend on it?</strong> If no DOM node reads it, the
+    store can only ever cost you.</li>
+    <li><strong>Does anything outside its owner need to read it?</strong> If only the engine
+    touches it, the store is doing no work for you.</li>
+  </ol>
+
+  <p>Run the four pieces of state through it:</p>
+
+  <table>
+    <tbody>
+      <tr><td style="width:11rem"><strong><code>PendingEdits</code></strong></td><td>pointer
+      rate &middot; nothing in the DOM &middot; engine only. Three noes. <em>Engine.</em></td></tr>
+      <tr><td><strong><code>board</code></strong></td><td>network rate, human-paced
+      &middot; <code>GameScreen</code> prints the unit count &middot; React and the engine
+      both read it. <em>Store.</em></td></tr>
+      <tr><td><strong><code>selection</code></strong></td><td>human-paced &middot; drives what
+      the tools offer &middot; read in both places. <em>Store</em>, and it pays its fee in
+      <code>showView</code>.</td></tr>
+      <tr><td><strong>camera</strong></td><td>every frame &middot; nothing in the DOM &middot;
+      the rig alone. <em>Engine</em>, by the same three noes as <code>PendingEdits</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <span class="label">Say this one in an interview</span>
+    <p><code>PendingEdits</code> is to the client store what <strong>presence</strong> is to
+    the server&rsquo;s <code>Doc</code>. Your own notes say presence &ldquo;is not part of
+    <code>Doc</code>, not saved and not undoable&rdquo;; a drag still ends in one edit
+    command, and the 20&nbsp;Hz stream in between is deliberately kept outside the document.
+    Identical reasoning, opposite end of the wire: <em>high-frequency, transient, nobody
+    else&rsquo;s business &mdash; so keep it out of the thing that notifies everyone.</em></p>
+    <p>One principle, applied twice, in two languages. That is a far better answer than
+    reciting what Zustand is.</p>
+  </div>
+
+  <h2><span class="n">06</span>How the engine reads the store at all</h2>
+
+  <p>A fair question, since the engine is not a component and cannot call a hook. In
+  <code>App.tsx</code> it is handed the store object directly, and it uses the two methods
+  React never sees:</p>
+
+  <p class="srcline">client/src/engine/KriegsspielEngine.ts:119</p>
+
+<pre><code>this.unsubscribe = store.subscribe((state, previous) =&gt; {
+  if (state.board !== previous.board) {
+    this.pending.settle();
+    this.refresh();
+    this.syncMaps();
+  }
+  ...
+});</code></pre>
+
+  <p><code>getState()</code> to read now, <code>subscribe()</code> to be told later. No hook,
+  no render, no component. And notice the shape of that callback: a chain of
+  <code>!==</code> comparisons against the previous state, each guarding its own piece of
+  work. That is the manual version of what a hook&rsquo;s selector does for a component
+  &mdash; which is exactly why reference identity had to be preserved upstream in
+  <code>showView</code>.</p>
+
+  <p class="with-note">The boundary is clean in both directions: React owns the DOM, the
+  engine owns the canvas. <code>App.tsx</code> constructs the engine once in a
+  <code>useEffect</code> with an empty dependency array, and keeps the canvas mounted on
+  every screen, so switching from the menu to the game does not touch it.</p>
+  <p class="note">Its comment says so: &ldquo;Unmounting it would run the effect&rsquo;s
+  cleanup and dispose the engine.&rdquo; The engine outlives every React tree above it.</p>
+
+  <h2><span class="n">07</span>What this costs you</h2>
+
+  <p>It is a trade, so here is the other side, honestly.</p>
+
+  <ol class="steps">
+    <li><strong>React cannot see pending state.</strong> If you ever want the UI to say
+    &ldquo;2 edits in flight&rdquo; or grey out a control while one is, you will need a
+    deliberate bridge. Nothing wants it today &mdash; and when something does, the answer is
+    to publish a small derived summary into the store, not to move the map.</li>
+    <li><strong>There are two sources of truth for what is on screen.</strong> A reader has to
+    know that <code>shown</code> is not <code>board.pawns</code>. That you have an entire
+    architecture rule devoted to repeating this (&ldquo;What is on screen is the board plus
+    <code>PendingEdits</code>&rdquo;) is the cost made visible.</li>
+    <li><strong>Devtools and time travel do not see it.</strong> A store snapshot does not
+    describe the screen during a drag, which is worth knowing before you debug one.</li>
+  </ol>
+
+  <h2><span class="n">08</span>Recall</h2>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="3">
+      <p class="prompt">What does a Zustand <code>set()</code> actually cost you?</p>
+      <ul class="options">
+        <li>A write to browser memory</li>
+        <li>A diff of the whole board</li>
+        <li>A render of every subscriber</li>
+        <li>A copy of the state tree</li>
+      </ul>
+      <p class="why">A trigger. The storage is free; the notification is the price. That is
+      why the question is always &ldquo;who is subscribed, and how often does this
+      change?&rdquo;</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">During a drag, how often is <code>refresh()</code> called?</p>
+      <ul class="options">
+        <li>Once when the drag begins</li>
+        <li>Once per animation frame drawn</li>
+        <li>Once when the drag releases</li>
+        <li>Once per pointer move event</li>
+      </ul>
+      <p class="why">Per pointer move, which is where the rate comes from. The command is sent
+      once, at the end &mdash; one drag, one undo step &mdash; but the preview updates on
+      every move.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">If pending edits were in the store, what would React commit?</p>
+      <ul class="options">
+        <li>Every unit position, each frame</li>
+        <li>Nothing, because the DOM matched</li>
+        <li>Only the units being dragged</li>
+        <li>The selection and the toolbar</li>
+      </ul>
+      <p class="why">Nothing at all. React does not touch the DOM when the rendering result is
+      unchanged &mdash; so you would pay the trigger and the whole render phase for a
+      guaranteed-empty commit.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Why does <code>sameTurns</code> exist in <code>showView</code>?</p>
+      <ul class="options">
+        <li>Turn lists arrive out of order</li>
+        <li>The server sends turns too often</li>
+        <li>A new array would re-render Timeline</li>
+        <li>Zustand cannot compare nested arrays</li>
+      </ul>
+      <p class="why">Reference identity. Every snapshot carries the turn list, but it rarely
+      changes; handing back the old array keeps subscribers asleep. It is the membership fee
+      for being in the store.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What is <code>PendingEdits</code> the client-side twin of?</p>
+      <ul class="options">
+        <li>The server's recorded turn history</li>
+        <li>Presence, which is not in <code>Doc</code></li>
+        <li>The watch channel's coalescing doorbell</li>
+        <li>The per-umpire undo and redo stacks</li>
+      </ul>
+      <p class="why">Presence. High-frequency, transient, nobody else's business, so it is
+      deliberately kept out of the structure that notifies everyone. Same principle, other end
+      of the wire.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">09</span>Drill: where does it live, and why?</h2>
+
+  <p>The reason matters more than the answer here. Two of these have a right home for a
+  <em>wrong</em> reason among the options.</p>
+
+  <ol class="quiz" data-label="Placement">
+    <li class="q" data-answer="2">
+      <p class="prompt">The camera's position and heading.</p>
+      <ul class="options">
+        <li>The store: the toolbar shows it</li>
+        <li>The engine: nothing rendered reads it</li>
+        <li>The store: screens must restore it</li>
+        <li>The engine: three.js owns the data</li>
+      </ul>
+      <p class="why">Engine &mdash; but because no DOM node depends on it and it changes every
+      frame, not because three.js happens to hold it. &ldquo;The library owns it&rdquo; is a
+      coincidence; the change rate is the reason. <code>cameraMode</code>, meanwhile, <em>is</em>
+      in the store: the toolbar sets it, and it changes when a person clicks.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">Which recorded turn this umpire is viewing.</p>
+      <ul class="options">
+        <li>The engine: it changes what is drawn</li>
+        <li>The engine: the server already tracks it</li>
+        <li>The store: the timeline must label it</li>
+        <li>The store: it changes on every frame</li>
+      </ul>
+      <p class="why">Store. It does change what is drawn, and the server does track it, but
+      neither decides: the <code>Timeline</code> has to render which turn is on screen, and
+      <code>EditorContext.readOnly</code> turns off the tools. React needs it, so it is in the
+      store, and it changes only when a person steps.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">The marquee rectangle being dragged out right now.</p>
+      <ul class="options">
+        <li>The store: the toolbar sets its shape</li>
+        <li>The store: the selection depends on it</li>
+        <li>The engine: it must survive reconnects</li>
+        <li>The engine: it changes at pointer rate</li>
+      </ul>
+      <p class="why">Engine, on question one. Your conventions already say the box &ldquo;never
+      goes through the store&rdquo;. Note the trap: <code>marqueeShape</code> is in the store,
+      the rectangle is not &mdash; one is a human choice, the other is a pointer position, and
+      they are not the same kind of thing despite sharing a name.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">Whether the socket is connected.</p>
+      <ul class="options">
+        <li>The store: GameScreen renders the text</li>
+        <li>The engine: the socket lives nearby</li>
+        <li>The engine: it changes too often</li>
+        <li>The store: it must be undoable</li>
+      </ul>
+      <p class="why">Store, on question two: there is a DOM node showing it. It also changes
+      about as rarely as anything in the app. Note that it is <em>not</em> game state &mdash;
+      it is in the client store and nowhere near <code>Doc</code>, which is the third place
+      this distinction has turned up.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">10</span>Read this next</h2>
+
+  <p><a href="https://react.dev/learn/render-and-commit">React docs &mdash; Render and
+  Commit</a>. Short, official, and the source of every claim above about what a render is.
+  Read it with one question in mind: <em>what triggers step one?</em> The page is emphatic
+  that only a state update does, and that is the whole reason the change rate of a value
+  decides where it belongs.</p>
+
+  <p class="with-note">Then, if you want the other half,
+  <a href="https://react.dev/learn/state-as-a-snapshot">State as a Snapshot</a> explains why a
+  render sees the state it was triggered with &mdash; which is the bit that bites people
+  coming from a frame loop, where you read a mutable position whenever you like.</p>
+  <p class="note">Both pages are on react.dev, the maintainers' own documentation. For the
+  store side, Zustand's vanilla <code>createStore</code> reference covers
+  <code>getState</code> and <code>subscribe</code>, the two methods the engine uses.</p>
+
+  <h2 id="next"><span class="n">11</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong><a href="0006-smoothing-what-arrives-late.html">Lesson 6 &mdash; smoothing
+    what arrives late</a>.</strong> The natural sequel, and
+    the one place your existing skills do most of the work. Boards arrive at human pace from a
+    few hundred milliseconds away, and <code>pawns/spring.ts</code> already interpolates
+    towards them at a fixed 240&nbsp;Hz step. That machinery is most of what presence needs
+    &mdash; a 20&nbsp;Hz stream of another umpire's drag, smoothed between updates, outdated
+    ones dropped rather than queued. The networking name for it is entity interpolation, and
+    Gambetta Part&nbsp;III is the primary source.</p>
+    <p>To say out loud before then: <strong>"a store is not storage, it is a subscription
+    &mdash; so the change rate of a value is the render rate of everything reading it"</strong>.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> Three worth pushing on. <em>What the bridge looks like</em> if
+    you do want pending state in the UI &mdash; it is a real design question and the obvious
+    answer is the wrong one. <em>Why <code>PendingEdits</code> cannot cover spawns and
+    deletions</em>, which is structural rather than an oversight, and the best remaining gap
+    in the optimistic-update story. And <em>whether the engine should subscribe at all</em>,
+    or be told &mdash; the callback at line 119 is a small inversion-of-control decision that
+    could have gone the other way.</p>
+    <p>And as ever: if a claim here does not survive contact with the code, say so. That has
+    happened twice now and both times the code was right.</p>
+  </div>
+
+  <p class="srcline" style="margin-top:3rem">
+    <a href="../reference/network-model.html">Cheat sheet</a> &middot;
+    <a href="0004-who-are-you.html">&larr; 0004 Who are you?</a> &middot;
+    <a href="../GLOSSARY.md">Glossary</a>
+  </p>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+/* Styles for the quiz component (assets/quiz.js). Depends on tokens from lesson.css. */
+
+.quiz { margin: 2rem 0; padding: 0; list-style: none; counter-reset: qn; }
+
+.quiz .q {
+  counter-increment: qn;
+  border-top: 1px solid var(--rule);
+  padding: 1.3rem 0 1.1rem;
+}
+
+.quiz .q:last-of-type { border-bottom: 1px solid var(--rule); }
+
+.quiz .prompt {
+  margin: 0 0 0.9rem;
+  font-weight: 600;
+  font-size: 1rem;
+  display: flex;
+  gap: 0.7rem;
+}
+
+.quiz .prompt::before {
+  content: counter(qn);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--accent);
+  font-weight: 400;
+  padding-top: 0.3rem;
+  flex: none;
+}
+
+.quiz .options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.quiz.two .options { grid-template-columns: 1fr 1fr; }
+
+@media (max-width: 34rem) {
+  .quiz.two .options { grid-template-columns: 1fr; }
+}
+
+.quiz .options li {
+  margin: 0;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font-size: 0.92rem;
+  cursor: pointer;
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+  display: block;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.quiz .options li:hover:not([aria-disabled="true"]) {
+  border-color: var(--ink-faint);
+  background: var(--code-bg);
+}
+
+.quiz .options li:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.quiz .options li[data-state="right"] {
+  border-color: var(--good);
+  background: var(--good-bg);
+  color: var(--good);
+  font-weight: 600;
+}
+
+.quiz .options li[data-state="wrong"] {
+  border-color: var(--bad);
+  background: var(--bad-bg);
+  color: var(--bad);
+  text-decoration: line-through;
+}
+
+.quiz .options li[data-state="muted"] { opacity: 0.45; }
+
+.quiz .why {
+  display: none;
+  margin: 0.9rem 0 0;
+  padding-left: 1.4rem;
+  border-left: 2px solid var(--accent);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.quiz .q.answered .why { display: block; }
+
+.quiz .why strong { color: var(--ink); }
+
+.quiz .score {
+  margin: 1.2rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.quiz .score.done { color: var(--accent); }

@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who Are You</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<link rel="stylesheet" href="../assets/quiz.css">
+</head>
+<body>
+<main class="page">
+
+  <p class="eyebrow">Lesson 0004 &middot; Kriegsspiel network model</p>
+  <h1>Who are you?</h1>
+  <p class="standfirst">One line hands out identity: <code>next_umpire.fetch_add(1)</code>.
+  Three lessons have leaned on it. It is also the load-bearing assumption in the whole model,
+  and it is wrong in three separate ways &mdash; one of which is a real hole, not a
+  theoretical one.</p>
+
+  <h2><span class="n">00</span>First, from memory</h2>
+
+  <ol class="quiz" data-label="Warm-up">
+    <li class="q" data-answer="2">
+      <p class="prompt">Why does this client need no sequence numbers?</p>
+      <ul class="options">
+        <li>The socket guarantees message order</li>
+        <li>Its commands state absolute results</li>
+        <li>Only one command is ever outstanding</li>
+        <li>The server acknowledges every command</li>
+      </ul>
+      <p class="why">A <code>place</code> says where the unit goes, not how far the pointer
+      moved, so there is no simulation to replay and nothing to re-derive. Ordering is true
+      but is not the reason &mdash; a delta-based command would need sequence numbers even
+      over a perfectly ordered socket.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">What stops a refused edit staying on screen for ever?</p>
+      <ul class="options">
+        <li>A timeout on each pending edit</li>
+        <li>The next command that is accepted</li>
+        <li>An error reply from the server</li>
+        <li>A board sent to the sender alone</li>
+      </ul>
+      <p class="why"><code>Effect::Me</code>. A refusal still sends that umpire a board, and
+      any board runs <code>settle()</code>. A server-side enum enforcing a client-side
+      invariant &mdash; which is why the client has no refusal-handling code at all.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">01</span>What identity is actually holding up</h2>
+
+  <p>Worth listing before pulling on it, because it is more than you might think. Everything
+  keyed by <code>UmpireId</code>:</p>
+
+  <table>
+    <thead><tr><th>Kept per umpire</th><th>Which means</th></tr></thead>
+    <tbody>
+      <tr><td><code>undo: Vec&lt;Edit&gt;</code>, <code>redo: Vec&lt;Edit&gt;</code></td>
+      <td>Ctrl+Z takes back <em>your</em> last edit, not whoever edited most recently</td></tr>
+      <tr><td><code>viewing: Option&lt;usize&gt;</code></td>
+      <td>you can study turn 3 while a colleague keeps editing the live board</td></tr>
+      <tr><td>which socket gets <code>Effect::Me</code></td>
+      <td>a refusal reaches the umpire who caused it and nobody else</td></tr>
+      <tr><td>(planned) which side you may see</td>
+      <td>the entire filtering rule rests on knowing who is asking</td></tr>
+      <tr><td>(planned) your cursor and held pieces</td>
+      <td>presence is meaningless without stable identities to attach it to</td></tr>
+    </tbody>
+  </table>
+
+  <p class="with-note">So identity is not a login feature bolted on the side. It is the key
+  that per-umpire state is stored under, and two of the five rows are things you have not
+  built yet &mdash; which is the real reason this lesson comes before step 4 and step 5
+  rather than after.</p>
+  <p class="note"><code>UmpireId</code> is a bare <code>u64</code> (<code>model.rs:34</code>). Nothing
+  about it is secret, structured or verifiable. That is fine for a map key and is exactly the
+  problem for everything else.</p>
+
+  <h2><span class="n">02</span>The honest reconnect</h2>
+
+  <p>Dropped connections are normal over long distances, so look at what the client does:</p>
+
+<pre><code>socket.onclose = () =&gt; {
+  <span class="c">// A socket that `disconnect` closed has already been replaced or dropped.</span>
+  <span class="k">if</span> (this.socket !== socket) <span class="k">return</span>;
+  setConnection(<span class="k">"disconnected"</span>);
+  this.retry = setTimeout(() =&gt; this.open(), RETRY_MS);
+};</code></pre>
+  <p class="srcline">client/src/net/ServerConnection.ts</p>
+
+  <p>Reconnect every 1500 ms, for ever, and <strong>replay nothing</strong>. The deliberate
+  omission is the interesting part, and lesson 3 earned the reason: a dropped
+  <code>place</code> carries absolute values computed against a board that may have moved
+  while you were away. Replaying it would stamp on whatever happened in the meantime. So the
+  client drops it and discards the preview, and the fresh snapshot on reconnect is the
+  recovery. Nothing is repaired because nothing is remembered.</p>
+
+  <div class="callout">
+    <span class="label">The property doing the work</span>
+    <p>A reconnection needs no special code path because <strong>a new connection and a
+    reconnection are the same thing</strong>: subscribe, then send the whole state,
+    unprompted. Self-healing snapshots again (lesson 2) &mdash; the same property that made
+    per-unit deltas the wrong trade is what makes recovery free here.</p>
+  </div>
+
+  <h2><span class="n">03</span>Three things that go wrong</h2>
+
+  <h3>One: your undo history is gone, and it is unreachable rather than lost</h3>
+
+<pre><code><span class="c">// Every connection is a new umpire until umpires can identify themselves.</span>
+<span class="k">let</span> umpire = game.next_umpire.fetch_add(1, Ordering::Relaxed);</code></pre>
+  <p class="srcline">crates/server/src/lib.rs:464</p>
+
+  <p class="with-note">Blink your wifi and you come back as umpire 7. Umpire 3's undo stack is
+  still sitting in <code>Doc::umpires</code>, intact, with every one of your edits in it
+  &mdash; and no connection will ever again present the id that opens it. Ctrl+Z now does
+  nothing, for the rest of the game, however many edits you had made.</p>
+  <p class="note">Worse than it sounds in one specific way: it is <em>silent</em>. The board
+  is correct, the snapshot arrives, the UI shows connected. The only symptom is that undo
+  quietly stops working, which a user will read as a bug in undo.</p>
+
+  <h3>Two: nothing ever frees the abandoned umpire</h3>
+
+  <div class="callout">
+    <span class="label">Fixed since this lesson &mdash; 23 Nov 2026</span>
+    <p>This one is closed. <code>Doc::forget_umpire</code> now drops the entry when the
+    connection ends, collected in <code>client()</code> after a new <code>serve_client</code>
+    holding the loop, so the five exits below meet in one place.</p>
+    <p>Read the rest anyway, because the interesting part is what the fix turned out to rest
+    on. I argued that identity would make this removal into data loss and that it would need a
+    grace period. Wrong, and the codebase said so: <code>pack</code> takes only the board, the
+    turns and the images, and loading a save clears every history. Undo was never game state.
+    The owner's decision is that losing a connection loses the history, identity or not
+    (<strong>ADR 0018</strong>) &mdash; so this line is garbage collection today and becomes
+    the thing that <em>enforces</em> that rule the moment an id can come back. The real cost
+    is not lost work, it is <code>Step::Empty</code> being <code>Effect::None</code>: Ctrl+Z
+    after a reconnect sends nothing at all, so the key just looks broken. See
+    <a href="../learning-records/0003-forget-the-umpire-on-disconnect.md">learning record
+    0003</a>.</p>
+  </div>
+
+  <p>Look for the cleanup and there is none. <code>Doc::umpires</code> is a
+  <code>HashMap</code> touched only through <code>entry(umpire).or_default()</code>, at four
+  call sites. No <code>remove</code>, no <code>retain</code>. The <code>client()</code> task
+  ends, its socket is dropped, and the document keeps the entry for ever.</p>
+
+  <p class="with-note">Each abandoned entry holds up to 200 <code>Edit</code>s &mdash; the cap
+  from <code>push_capped</code> &mdash; and every <code>Edit</code> holds
+  <code>Change&lt;Unit&gt;</code> and <code>Change&lt;MapImage&gt;</code> values with
+  <em>both</em> the before and after clones in them. So the leak is per reconnection, not per
+  session: a flaky link over a long game adds an entry every time it blinks.</p>
+  <p class="note">I am not going to put a number on it, because nothing here has been
+  measured and this file's own convention is to say so. The shape is what matters: bounded
+  per umpire, unbounded in the number of umpires, and growing with exactly the event that is
+  described as normal.</p>
+
+  <p>Note that this is <em>not</em> in your open questions. The identity gap is recorded;
+  this consequence of it is not. It is also the easier of the two to fix, and the fix is
+  mostly a decision: an entry with an empty undo and redo stack and no
+  <code>viewing</code> is indistinguishable from one that never existed, so it can be dropped
+  when its connection ends &mdash; but only once you have decided that a disconnection really
+  does abandon that history, which is the same decision as the one above.</p>
+
+  <h3>Three: anyone can be an umpire</h3>
+
+  <p>This is the one that is a hole rather than an inconvenience, and your own notes say so:</p>
+
+  <blockquote>
+    <p>&ldquo;nothing stops a page the umpire happens to be visiting from opening a WebSocket
+    to their own server and sending commands, or from reading <code>/save</code>.&rdquo;</p>
+    <cite>CLAUDE.md, Open questions</cite>
+  </blockquote>
+
+  <p>That sentence is correct and it is worth understanding the mechanism properly, because
+  three plausible-sounding defences do not apply.</p>
+
+  <h2><span class="n">04</span>Why the three obvious defences do not hold</h2>
+
+  <ol class="steps">
+    <li><strong>"It is bound to loopback."</strong> True &mdash; and irrelevant, because the
+    attacker's code is not on the network. It is JavaScript running <em>in the umpire's own
+    browser</em>, on a page they opened. From there, <code>127.0.0.1</code> is reachable like
+    any other host. Binding to loopback keeps out the internet; it does not keep out the
+    browser sitting on the machine.</li>
+
+    <li><strong>"CORS protects the HTTP routes."</strong> The opposite. CORS is a mechanism
+    for <em>relaxing</em> the same-origin policy, and <code>cors()</code> relaxes it as far
+    as it goes: <code>allow_origin(Any)</code>. So a page on any origin may read
+    <code>GET /save</code> &mdash; the entire game, both sides' positions, every image. Your
+    own comment is clear-eyed that this is deliberate and that being strict there "would only
+    move the hole, not close it". Correct. But it is worth being precise that CORS was never
+    a defence being given up: it is an allowance being granted.</li>
+
+    <li class="hot"><strong>"The WebSocket is at least same-origin protected."</strong> No
+    &mdash; and this is the part most people get wrong. <strong>The same-origin policy does
+    not apply to WebSocket connections.</strong> A page on any origin may open a socket to
+    any host and port, and no preflight is involved. CORS headers are irrelevant because CORS
+    is not consulted.
+    <p>The protocol's answer is to put the decision on the server, and RFC 6455 is explicit
+    about both the duty and the threat:</p>
+    <blockquote>
+      <p>A server &ldquo;<em>SHOULD verify the |Origin| field is an origin they
+      expect</em>&rdquo;, and if not, &ldquo;<em>it SHOULD respond to the WebSocket handshake
+      with a reply containing HTTP 403 Forbidden status code</em>&rdquo;. The purpose:
+      &ldquo;<em>ensure that trusted browsers under the control of potentially malicious
+      JavaScript cannot fake a WebSocket handshake</em>&rdquo;.</p>
+      <cite><a href="https://www.rfc-editor.org/rfc/rfc6455.html#section-10.2">RFC 6455
+      &sect;10.2, Origin Considerations</a></cite>
+    </blockquote>
+    <p><code>upgrade()</code> does not look at <code>Origin</code>. It sets two size limits
+    and upgrades.</p></li>
+  </ol>
+
+  <figure class="wide">
+    <svg viewBox="0 0 560 170" role="img" aria-label="Attack path from a visited page to the local game server">
+      <rect class="dbox" x="0" y="26" width="200" height="86" rx="3"/>
+      <text class="dlabel" x="10" y="20">the umpire's own browser</text>
+      <rect class="dfill" x="12" y="38" width="80" height="30" rx="2"/>
+      <text class="dlabel" x="20" y="50">the app</text>
+      <text class="dlabel" x="20" y="62" style="fill:var(--accent)">tab 1</text>
+      <rect class="dbox" x="104" y="38" width="84" height="30" rx="2"/>
+      <text class="dlabel" x="112" y="50">any page</text>
+      <text class="dlabel" x="112" y="62">tab 2</text>
+      <text class="dlabel" x="12" y="86">both tabs can reach 127.0.0.1.</text>
+      <text class="dlabel" x="12" y="98">Loopback is not a boundary here.</text>
+
+      <path class="dhot" d="M200 52 L350 52"/>
+      <path class="dhot" d="M343 48 L350 52 L343 56"/>
+      <text class="dlabel" x="212" y="46" style="fill:var(--accent)">ws:// &mdash; no CORS, no preflight</text>
+      <text class="dlabel" x="212" y="64">commands: spawn, place, undo&hellip;</text>
+
+      <path class="dhot" d="M200 92 L350 92"/>
+      <path class="dhot" d="M343 88 L350 92 L343 96"/>
+      <text class="dlabel" x="212" y="86" style="fill:var(--accent)">GET /save &mdash; allow_origin(Any)</text>
+      <text class="dlabel" x="212" y="104">the whole game, both sides</text>
+
+      <rect class="dfill" x="350" y="26" width="150" height="86" rx="3"/>
+      <text class="dlabel" x="360" y="44" style="fill:var(--accent)">game server :7878</text>
+      <text class="dlabel" x="360" y="60">no Origin check</text>
+      <text class="dlabel" x="360" y="74">no token</text>
+      <text class="dlabel" x="360" y="88">every connection is</text>
+      <text class="dlabel" x="360" y="100">a fresh umpire</text>
+
+      <text class="dlabel" x="0" y="134">Checking Origin closes the top arrow for browsers, which is the whole</text>
+      <text class="dlabel" x="0" y="146">drive-by case. It does nothing about a non-browser client, and the RFC</text>
+      <text class="dlabel" x="0" y="158">says so: "the intent is not to prevent non-browsers from establishing connections".</text>
+    </svg>
+    <figcaption>The attacker is a tab, not a stranger on the network. That single fact is
+    what makes the three defences above fail.</figcaption>
+  </figure>
+
+  <h2><span class="n">05</span>What I would do, and in what order</h2>
+
+  <p>A recommendation, not a decision &mdash; your open question, and the design is yours. But
+  the ordering matters more than the choice, because one of these is cheap and immediate and
+  the other needs thought.</p>
+
+  <p><strong>First, check <code>Origin</code> on the upgrade.</strong> A handful of lines, no
+  design work, no protocol change, and it closes the entire drive-by case: an arbitrary page
+  can no longer open a socket to your server at all. You already know the complete list of
+  legitimate origins, because <code>endpoint.ts</code> is the only thing that builds the URL:
+  <code>http://localhost:1420</code> in development, <code>tauri://localhost</code> packaged,
+  and the relay's origin later. Be aware of exactly what it buys: the RFC is blunt that
+  &ldquo;<em>the intent is not to prevent non-browsers from establishing
+  connections</em>&rdquo;, since a non-browser client simply sends whatever
+  <code>Origin</code> it likes. So this is a fix for the realistic threat, not a security
+  boundary.</p>
+
+  <p><strong>Then a token, which is the real answer, and the one to think about.</strong> The
+  requirement it has to satisfy is not "authenticate a user" &mdash; it is the one from
+  lesson 2 and section 1 of this lesson: <em>the same person reconnecting must present the
+  same identity</em>. That makes undo survive a drop, makes the leak collectable, and gives
+  presence something stable to attach to. Which is why I would treat the token and the
+  reconnect problem as a single piece of work rather than as security plus a bug: they are
+  one missing concept.</p>
+
+  <p class="with-note">The thing to be careful about is <em>where</em> the token travels. The
+  browser WebSocket API gives you no way to set a request header, so the usual options are
+  the query string, the <code>Sec-WebSocket-Protocol</code> header, or a first message after
+  the socket opens. Each has consequences worth weighing before you pick &mdash; a query
+  string ends up in logs, a subprotocol is awkward but is a real header, and a first message
+  means a window in which the connection exists but has no identity.</p>
+  <p class="note">And one thing it does <em>not</em> have to do: be a user account. Your
+  requirement is continuity of identity across a reconnect, plus a way for the host to hand
+  one out. Those are far weaker than a login, and building a login would be the expensive
+  wrong answer.</p>
+
+  <h2><span class="n">06</span>Recall</h2>
+
+  <ol class="quiz" data-label="Recall">
+    <li class="q" data-answer="3">
+      <p class="prompt">Why does the client replay nothing after reconnecting?</p>
+      <ul class="options">
+        <li>The server would refuse stale commands</li>
+        <li>Replayed commands would arrive unordered</li>
+        <li>Absolute values could overwrite newer work</li>
+        <li>The pending edits were already discarded</li>
+      </ul>
+      <p class="why">A <code>place</code> states a result computed against the board as it was
+      before the drop. Replaying it would stamp on whatever changed while you were away.
+      Option 4 is true but is a consequence, not the reason &mdash; the preview is discarded
+      <em>because</em> the command will not be sent.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">What happens to umpire 3's undo stack after a reconnect?</p>
+      <ul class="options">
+        <li>It stays, and nothing can reach it</li>
+        <li>It is merged into the new umpire</li>
+        <li>It is dropped when the task ends</li>
+        <li>It is written into the save file</li>
+      </ul>
+      <p class="why">Still in <code>Doc::umpires</code>, intact, keyed by an id no connection
+      will present again. Both halves matter: the user silently loses undo, <em>and</em> the
+      memory is never freed, because nothing removes an entry.</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">Why does loopback binding not keep an attacker out?</p>
+      <ul class="options">
+        <li>The relay forwards external traffic in</li>
+        <li>Tauri exposes the port to the network</li>
+        <li>CORS headers override the bind address</li>
+        <li>The attacking code runs in the browser</li>
+      </ul>
+      <p class="why">A page the umpire opens runs on their machine, so
+      <code>127.0.0.1:7878</code> is reachable from it. Loopback excludes the network, and the
+      threat is not on the network. Nothing about CORS or the relay is involved.</p>
+    </li>
+    <li class="q" data-answer="2">
+      <p class="prompt">What does the same-origin policy do for a WebSocket?</p>
+      <ul class="options">
+        <li>Blocks cross-origin sockets by default</li>
+        <li>Nothing, so the server must check</li>
+        <li>Requires a preflight before upgrading</li>
+        <li>Permits them once CORS headers allow</li>
+      </ul>
+      <p class="why">It does not apply. No preflight, and CORS is never consulted, so the
+      permissive CORS layer is neither the cause nor the cure. RFC 6455 &sect;10.2 puts the
+      duty on the server: verify <code>Origin</code>, answer 403 if you do not like it.</p>
+    </li>
+    <li class="q" data-answer="3">
+      <p class="prompt">What is the actual requirement a token has to meet here?</p>
+      <ul class="options">
+        <li>Proving which human is connected</li>
+        <li>Encrypting commands on the wire</li>
+        <li>Keeping one identity across reconnects</li>
+        <li>Stopping players reading the save</li>
+      </ul>
+      <p class="why">Continuity is the requirement that undo, the leak and presence all share.
+      Option 4 is a genuine goal but follows from identity rather than driving it, and a full
+      login would be the expensive wrong answer to a weaker need.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">07</span>Drill: does this fix it?</h2>
+
+  <p>For each proposal, pick the honest assessment.</p>
+
+  <ol class="quiz" data-label="Drill">
+    <li class="q" data-answer="2">
+      <p class="prompt">Tighten CORS to a single allowed origin.</p>
+      <ul class="options">
+        <li>Closes it, since all routes check origin</li>
+        <li>Moves the hole; the socket ignores CORS</li>
+        <li>Closes it for pages, not for native clients</li>
+        <li>Breaks nothing and prevents command sending</li>
+      </ul>
+      <p class="why">It would stop a page reading <code>/save</code>, which is worth
+      something &mdash; but commands travel over the socket, where CORS is not consulted at
+      all. Your own comment already reaches this conclusion: being strict there "would only
+      move the hole, not close it".</p>
+    </li>
+    <li class="q" data-answer="4">
+      <p class="prompt">Check the <code>Origin</code> header on upgrade.</p>
+      <ul class="options">
+        <li>Closes it fully, as the RFC intends</li>
+        <li>Useless, since any client may omit it</li>
+        <li>Breaks the packaged app's own origin</li>
+        <li>Closes the browser case, not other clients</li>
+      </ul>
+      <p class="why">Exactly what &sect;10.2 is for, and exactly as far as it goes: it stops
+      malicious JavaScript in a trusted browser, and "the intent is not to prevent
+      non-browsers from establishing connections". Not useless, not a boundary. Worth doing
+      first because it is cheap and the browser case is the realistic one.</p>
+    </li>
+    <li class="q" data-answer="1">
+      <p class="prompt">Remove an umpire's entry when its connection closes.</p>
+      <ul class="options">
+        <li>Fixes the leak, admits undo is gone</li>
+        <li>Fixes both the leak and the history</li>
+        <li>Risks freeing an entry still in use</li>
+        <li>Requires the document write lock twice</li>
+      </ul>
+      <p class="why">It stops the growth, and it is what was built. At the time I argued it
+      pre-empted an unsettled question &mdash; whether a dropped connection really abandons
+      that history. The owner settled it the other way, deliberately (ADR 0018): it does, even
+      once identity exists. So this removal is not a stopgap, it is the policy.</p>
+    </li>
+  </ol>
+
+  <h2><span class="n">08</span>Read this next</h2>
+
+  <p><a href="https://www.rfc-editor.org/rfc/rfc6455.html#section-10">RFC 6455, section 10,
+  Security Considerations</a> &mdash; short, and 10.2 is the paragraph that names your exact
+  situation. Read 10.5 too, which is one sentence long and says the protocol
+  &ldquo;<em>doesn't prescribe any particular way that servers can authenticate clients
+  during the WebSocket handshake</em>&rdquo;. That is why there is no obvious right answer to
+  find: the protocol genuinely leaves it to you, which is the thing worth knowing before you
+  go looking for the standard pattern.</p>
+
+  <h2 id="next"><span class="n">09</span>Next</h2>
+
+  <div class="nextup">
+    <p><strong><a href="0005-where-state-lives.html">Lesson 5 &mdash; where state
+    lives</a>.</strong> We have reached
+    the end of the server thread, so the next one turns to the client's architecture, and to
+    the question that has been sitting in plain sight since lesson 3: <code>PendingEdits</code>
+    is obviously state, so why does it live in the engine rather than in Zustand with the
+    board and the selection? The answer is about what a React render <em>is</em>, and it is
+    the best place in this codebase to learn that properly &mdash; with the frame-loop
+    comparison actually earning its keep.</p>
+    <p>To say out loud before then: <strong>"the same-origin policy does not apply to
+    WebSockets, so the server has to check Origin itself"</strong>.</p>
+  </div>
+
+  <div class="ask">
+    <p><strong>Ask me.</strong> Three things worth going further on. The token design, if you
+    want to settle it now rather than at step 4 &mdash; I would rather talk it through than
+    hand you a scheme, since it interacts with the relay's join-by-code and you have not
+    designed that either. Whether the leak should just be fixed today, independently, with a
+    deliberately stated "a disconnect abandons that history" &mdash; there is a reasonable
+    case for yes. And the one I would push you on: whether <code>/save</code> should be
+    behind the same identity as the socket, because right now the save route is the broadest
+    read in the system and it is the one place where the stakes are a whole game rather than
+    one command.</p>
+  </div>
+
+</main>
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
