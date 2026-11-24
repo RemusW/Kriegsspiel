@@ -94,9 +94,9 @@ impl SavedBoard {
     /// sized from the image itself, so an old save opens looking as it did.
     fn into_board(mut self, assets: &AssetStore) -> Result<Board, SaveError> {
         if let Some(asset) = self.map_image.take() {
-            let image = assets.get(&asset).ok_or_else(|| SaveError::MissingAsset {
-                id: asset.clone(),
-            })?;
+            let image = assets
+                .get(&asset)
+                .ok_or_else(|| SaveError::MissingAsset { id: asset.clone() })?;
             self.board.add_map(asset, (image.width, image.height));
         }
         Ok(self.board)
@@ -144,14 +144,23 @@ pub enum SaveError {
     /// `manifest.json` inflates to more than [`MAX_MANIFEST_BYTES`].
     ManifestTooLarge,
     /// Written by a newer build, which may have put things in it that would be lost.
-    Future { format: u32 },
+    Future {
+        format: u32,
+    },
     /// An entry the manifest names is missing, misnamed, or does not hash to the id it is
     /// filed under.
-    BadAsset { id: AssetId },
+    BadAsset {
+        id: AssetId,
+    },
     /// An image in the archive is not one this build can serve.
-    Image { id: AssetId, error: AssetError },
+    Image {
+        id: AssetId,
+        error: AssetError,
+    },
     /// The board or a recorded turn names an image the file does not hold.
-    MissingAsset { id: AssetId },
+    MissingAsset {
+        id: AssetId,
+    },
 }
 
 impl fmt::Display for SaveError {
@@ -162,7 +171,10 @@ impl fmt::Display for SaveError {
             Self::NoManifest => write!(f, "no {MANIFEST_PATH}: this is not a save file"),
             Self::Manifest(error) => write!(f, "{MANIFEST_PATH} could not be read: {error}"),
             Self::ManifestTooLarge => {
-                write!(f, "{MANIFEST_PATH} is over the {MAX_MANIFEST_BYTES} byte limit")
+                write!(
+                    f,
+                    "{MANIFEST_PATH} is over the {MAX_MANIFEST_BYTES} byte limit"
+                )
             }
             Self::Future { format } => write!(
                 f,
@@ -170,7 +182,9 @@ impl fmt::Display for SaveError {
             ),
             Self::BadAsset { id } => write!(f, "image {id} is missing from the file or damaged"),
             Self::Image { id, error } => write!(f, "image {id}: {error}"),
-            Self::MissingAsset { id } => write!(f, "the game uses image {id}, which the file does not hold"),
+            Self::MissingAsset { id } => {
+                write!(f, "the game uses image {id}, which the file does not hold")
+            }
         }
     }
 }
@@ -339,10 +353,7 @@ pub fn unpack(bytes: &[u8]) -> Result<(Doc, AssetStore), SaveError> {
 /// still use a map image the live board has moved on from, so a save has to keep both.
 fn referenced(board: &Board, turns: &[Turn]) -> BTreeSet<AssetId> {
     let boards = std::iter::once(board).chain(turns.iter().map(|turn| &turn.board));
-    boards
-        .flat_map(Board::images)
-        .cloned()
-        .collect()
+    boards.flat_map(Board::images).cloned().collect()
 }
 
 /// For images, which are compressed already.
@@ -426,7 +437,10 @@ mod tests {
         assert_eq!(json["board"]["pawns"][0]["kind"], "Infantry");
         assert_eq!(json["turns"][0]["recordedAt"], 1_700_000_000_000u64);
         let map = &doc.board.maps[0].asset;
-        assert_eq!(json["board"]["maps"][0]["asset"].as_str(), Some(map.as_str()));
+        assert_eq!(
+            json["board"]["maps"][0]["asset"].as_str(),
+            Some(map.as_str())
+        );
         assert_eq!(json["board"]["maps"][0]["size"][0], 100.0);
         assert!(
             json["board"].get("mapImage").is_none(),
@@ -434,7 +448,10 @@ mod tests {
         );
         assert_eq!(json["assets"][map.as_str()]["mime"], "image/png");
         assert_eq!(json["assets"][map.as_str()]["width"], 4096);
-        assert_eq!(json["assets"][map.as_str()]["path"], format!("assets/{map}.png"));
+        assert_eq!(
+            json["assets"][map.as_str()]["path"],
+            format!("assets/{map}.png")
+        );
     }
 
     #[test]
@@ -618,7 +635,10 @@ mod tests {
     /// Every entry in an archive, in the order it was written.
     fn entry_paths(zip: &mut ZipArchive<Cursor<impl AsRef<[u8]>>>) -> Vec<String> {
         zip.file_names()
-            .map(|name| name.expect("a written archive lists its entries").into_owned())
+            .map(|name| {
+                name.expect("a written archive lists its entries")
+                    .into_owned()
+            })
             .collect()
     }
 

@@ -27,7 +27,9 @@ fn the_sample_save_loads() {
     let [map] = &doc.board.maps[..] else {
         panic!("it lays one map down");
     };
-    let asset = assets.get(&map.asset).expect("and carries that map with it");
+    let asset = assets
+        .get(&map.asset)
+        .expect("and carries that map with it");
     // Portrait, so opening the sample visibly reshapes the table from the blank 100 x 70.
     assert_eq!((asset.width, asset.height), (512, 768));
     assert_eq!(asset.kind.mime(), "image/png");

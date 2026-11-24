@@ -3,8 +3,9 @@
 /**
  * An image id: the lowercase hex SHA-256 of the image's bytes.
  *
- * Made only by hashing bytes or by checking a string from outside, including when one is
- * deserialized, so holding an `AssetId` means the string has that shape and is safe to use
- * as a key or a file name. Whether the store holds the image is a separate question.
+ * Made only by hashing bytes ([`AssetId::of`]) or by checking a string from outside
+ * ([`AssetId::parse`], which deserializing also goes through), so holding an `AssetId` means
+ * the string has that shape and is safe to use as a key or a file name. Whether the store
+ * holds the image is a separate question.
  */
 export type AssetId = string;

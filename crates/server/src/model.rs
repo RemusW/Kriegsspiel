@@ -8,7 +8,7 @@
 //! old values back only where the board still holds the values that step left, so later
 //! changes by other umpires are kept.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -178,10 +178,11 @@ impl Board {
     /// Every image this board names: each map's, and any unit's top-face image. What a save
     /// file has to carry, and what may not be thrown away while this board exists.
     pub fn images(&self) -> impl Iterator<Item = &AssetId> {
-        self.maps
-            .iter()
-            .map(|map| &map.asset)
-            .chain(self.pawns.iter().filter_map(|unit| unit.pawn.image.as_ref()))
+        self.maps.iter().map(|map| &map.asset).chain(
+            self.pawns
+                .iter()
+                .filter_map(|unit| unit.pawn.image.as_ref()),
+        )
     }
 }
 
@@ -241,6 +242,19 @@ impl Doc {
         self.umpires.get(&umpire).and_then(|u| u.viewing)
     }
 
+    /// Drop everything the document keeps for one umpire: both history stacks and the turn
+    /// they were viewing. Not an edit, and no client's view names an umpire, so this changes
+    /// nothing anyone can see.
+    ///
+    /// Losing a connection is meant to lose the history with it, so this is how that rule is
+    /// kept rather than a tidy-up: an umpire who reconnects and presents the same id must not
+    /// inherit the stack they left behind. Undo covers what this umpire did while connected,
+    /// which is why it is also absent from a save and cleared by a load. It is not part of
+    /// the game.
+    pub fn forget_umpire(&mut self, umpire: UmpireId) {
+        self.umpires.remove(&umpire);
+    }
+
     /// Apply one umpire's change to the live board as a single undo step for that umpire.
     /// Clears that umpire's redo, not anyone else's. Refused, returning false, while the
     /// umpire is viewing a recorded turn.
@@ -265,39 +279,47 @@ impl Doc {
 
     /// Undo this umpire's latest edit, leaving other umpires' later changes in place.
     pub fn undo(&mut self, umpire: UmpireId) -> Step {
-        self.step(umpire, true)
+        self.step(umpire, Direction::Undo)
     }
 
     /// Redo this umpire's latest undo.
     pub fn redo(&mut self, umpire: UmpireId) -> Step {
-        self.step(umpire, false)
+        self.step(umpire, Direction::Redo)
     }
 
-    fn step(&mut self, umpire: UmpireId, backwards: bool) -> Step {
+    /// Take this umpire's latest edit off one stack, apply it, and push what it actually
+    /// changed onto the other.
+    fn step(&mut self, umpire: UmpireId, direction: Direction) -> Step {
         let me = self.umpires.entry(umpire).or_default();
         if me.viewing.is_some() {
             return Step::ReadOnly;
         }
-        let from = if backwards { &mut me.undo } else { &mut me.redo };
-        let Some(edit) = from.pop() else {
+        let (take_from, push_to) = match direction {
+            Direction::Undo => (&mut me.undo, &mut me.redo),
+            Direction::Redo => (&mut me.redo, &mut me.undo),
+        };
+        let Some(edit) = take_from.pop() else {
             return Step::Empty;
         };
 
         let before = self.board.clone();
-        let skipped = edit.apply(&mut self.board, backwards);
+        let skipped = edit.apply(&mut self.board, direction);
 
-        // Keep what actually changed, so redoing a partial undo repeats only that part.
-        // Stored edits always point forwards: `before` is the older state.
-        let (done, to) = if backwards {
-            (Edit::between(&self.board, &before), &mut me.redo)
-        } else {
-            (Edit::between(&before, &self.board), &mut me.undo)
+        // Push only what actually changed, so redoing a partial undo repeats only that part.
+        // Stored edits always point forwards in time, whichever stack they are on.
+        let done = match direction {
+            Direction::Undo => Edit::between(&self.board, &before),
+            Direction::Redo => Edit::between(&before, &self.board),
         };
         if !done.is_empty() {
-            push_capped(to, done);
+            push_capped(push_to, done);
         }
 
-        if skipped { Step::Partial } else { Step::Applied }
+        if skipped {
+            Step::Partial
+        } else {
+            Step::Applied
+        }
     }
 
     /// Record the live board as a new turn, stamped with `recorded_at` (milliseconds since
@@ -344,203 +366,193 @@ impl Doc {
     }
 }
 
-/// One unit before and after an edit. `None` means the unit did not exist.
-#[derive(Clone, Debug, PartialEq)]
-struct UnitChange {
-    id: u64,
-    before: Option<Unit>,
-    after: Option<Unit>,
+/// Which way an edit is being applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Undo,
+    Redo,
 }
 
-/// One map before and after an edit. `None` means the map was not on the table. `at` is the
-/// place it had in the board's list, so bringing one back puts it at the same height in the
-/// stack rather than on top.
+/// Something on the board that undo tracks: it has a stable id, and an edit to it can be
+/// undone field by field.
+trait Tracked: Clone + PartialEq {
+    fn id(&self) -> u64;
+
+    /// Move each field that still holds its value in `from` to its value in `to`. Returns
+    /// whether any field was left alone because someone else has changed it since.
+    fn merge(&mut self, from: &Self, to: &Self) -> bool;
+}
+
+impl Tracked for Unit {
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn merge(&mut self, from: &Self, to: &Self) -> bool {
+        let Unit {
+            id: _,
+            kind,
+            side,
+            pawn:
+                Pawn {
+                    pos,
+                    rot,
+                    scale,
+                    image,
+                },
+        } = to;
+        let skipped = [
+            merge_field(&mut self.kind, &from.kind, kind),
+            merge_field(&mut self.side, &from.side, side),
+            merge_field(&mut self.pawn.pos, &from.pawn.pos, pos),
+            merge_field(&mut self.pawn.rot, &from.pawn.rot, rot),
+            merge_field(&mut self.pawn.scale, &from.pawn.scale, scale),
+            merge_field(&mut self.pawn.image, &from.pawn.image, image),
+        ];
+        skipped.contains(&true)
+    }
+}
+
+impl Tracked for MapImage {
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn merge(&mut self, from: &Self, to: &Self) -> bool {
+        let MapImage {
+            id: _,
+            asset,
+            pos,
+            size,
+        } = to;
+        let skipped = [
+            merge_field(&mut self.asset, &from.asset, asset),
+            merge_field(&mut self.pos, &from.pos, pos),
+            merge_field(&mut self.size, &from.size, size),
+        ];
+        skipped.contains(&true)
+    }
+}
+
+/// One thing before and after an edit. `None` means it was not on the board. `at` is its
+/// place in the board's list, so bringing one back puts it where it was rather than at the
+/// end: for maps that is their height in the stack.
 #[derive(Clone, Debug, PartialEq)]
-struct MapChange {
+struct Change<T> {
     id: u64,
     at: usize,
-    before: Option<MapImage>,
-    after: Option<MapImage>,
+    before: Option<T>,
+    after: Option<T>,
 }
 
-/// Everything one edit changed: one undo step.
+impl<T> Change<T> {
+    /// The value this change starts from and the one it leads to, applied in `direction`.
+    fn ends(&self, direction: Direction) -> (Option<&T>, Option<&T>) {
+        match direction {
+            Direction::Undo => (self.after.as_ref(), self.before.as_ref()),
+            Direction::Redo => (self.before.as_ref(), self.after.as_ref()),
+        }
+    }
+}
+
+/// What changed between two versions of one of the board's lists. Walks the lists
+/// themselves rather than a hash map, so the order is deterministic.
+fn diff<T: Tracked>(before: &[T], after: &[T]) -> Vec<Change<T>> {
+    let now: HashMap<u64, &T> = after.iter().map(|item| (item.id(), item)).collect();
+    let was_there: HashSet<u64> = before.iter().map(T::id).collect();
+    let mut changes = Vec::new();
+
+    // Changed or removed: everything that was there and is now different or gone.
+    for (at, item) in before.iter().enumerate() {
+        let after = now.get(&item.id()).copied();
+        if after != Some(item) {
+            changes.push(Change {
+                id: item.id(),
+                at,
+                before: Some(item.clone()),
+                after: after.cloned(),
+            });
+        }
+    }
+
+    // Added: everything that is there now and was not before.
+    for (at, item) in after.iter().enumerate() {
+        if !was_there.contains(&item.id()) {
+            changes.push(Change {
+                id: item.id(),
+                at,
+                before: None,
+                after: Some(item.clone()),
+            });
+        }
+    }
+    changes
+}
+
+/// Apply these changes to one of the board's lists in `direction`. Each value moves only
+/// where the list still holds what the change left there. Returns whether anything was
+/// skipped because someone has changed it since.
+fn apply_changes<T: Tracked>(
+    list: &mut Vec<T>,
+    changes: &[Change<T>],
+    direction: Direction,
+) -> bool {
+    let mut skipped = false;
+    for change in changes {
+        let (from, to) = change.ends(direction);
+        let current = list.iter().position(|item| item.id() == change.id);
+        match (current, from, to) {
+            // Going back to not existing: remove it, unless someone has changed it since.
+            (Some(i), Some(from), None) if list[i] == *from => {
+                list.remove(i);
+            }
+            // Coming back into existence: put it where it was. Clamped, because things that
+            // were before it may have been removed since.
+            (None, None, Some(to)) => list.insert(change.at.min(list.len()), to.clone()),
+            // Changed while it exists: move back each field nobody else has touched since.
+            (Some(i), Some(from), Some(to)) => skipped |= list[i].merge(from, to),
+            // Someone else has since changed, removed or brought it back.
+            _ => skipped = true,
+        }
+    }
+    skipped
+}
+
+/// Everything one edit changed: one undo step. A new kind of thing on the board needs a
+/// [`Tracked`] impl and a line here, in [`Edit::between`], [`Edit::apply`] and
+/// [`Edit::is_empty`].
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Edit {
-    units: Vec<UnitChange>,
-    maps: Vec<MapChange>,
+    units: Vec<Change<Unit>>,
+    maps: Vec<Change<MapImage>>,
 }
 
 impl Edit {
     /// What changed from one board to another. The id counter is not tracked: undo never
     /// winds it back.
     fn between(before: &Board, after: &Board) -> Self {
-        let old: HashMap<u64, &Unit> = before.pawns.iter().map(|u| (u.id, u)).collect();
-        let new: HashMap<u64, &Unit> = after.pawns.iter().map(|u| (u.id, u)).collect();
-
-        // Walk the boards' own unit lists, not the maps, so the order is deterministic.
-        let mut units = Vec::new();
-        for unit in &before.pawns {
-            let now = new.get(&unit.id).copied();
-            if now != Some(unit) {
-                units.push(UnitChange {
-                    id: unit.id,
-                    before: Some(unit.clone()),
-                    after: now.cloned(),
-                });
-            }
+        Self {
+            units: diff(&before.pawns, &after.pawns),
+            maps: diff(&before.maps, &after.maps),
         }
-        for unit in &after.pawns {
-            if !old.contains_key(&unit.id) {
-                units.push(UnitChange {
-                    id: unit.id,
-                    before: None,
-                    after: Some(unit.clone()),
-                });
-            }
-        }
-
-        // The same walk again for the maps, which are a list with ids like the units, except
-        // that their order is the order they are drawn in and so is worth putting back.
-        let old_maps: HashMap<u64, &MapImage> = before.maps.iter().map(|m| (m.id, m)).collect();
-        let new_maps: HashMap<u64, &MapImage> = after.maps.iter().map(|m| (m.id, m)).collect();
-
-        let mut maps = Vec::new();
-        for (at, map) in before.maps.iter().enumerate() {
-            let now = new_maps.get(&map.id).copied();
-            if now != Some(map) {
-                maps.push(MapChange {
-                    id: map.id,
-                    at,
-                    before: Some(map.clone()),
-                    after: now.cloned(),
-                });
-            }
-        }
-        for (at, map) in after.maps.iter().enumerate() {
-            if !old_maps.contains_key(&map.id) {
-                maps.push(MapChange {
-                    id: map.id,
-                    at,
-                    before: None,
-                    after: Some(map.clone()),
-                });
-            }
-        }
-
-        Self { units, maps }
     }
 
     fn is_empty(&self) -> bool {
         self.units.is_empty() && self.maps.is_empty()
     }
 
-    /// Move the board across this edit: backwards to undo it, forwards to redo it. A value
-    /// moves only where the board still holds what the edit left there. Returns whether
-    /// anything was skipped because someone changed it since.
-    fn apply(&self, board: &mut Board, backwards: bool) -> bool {
-        let mut skipped = false;
-
-        for change in &self.units {
-            let (from, to) = if backwards {
-                (&change.after, &change.before)
-            } else {
-                (&change.before, &change.after)
-            };
-            let index = board.pawns.iter().position(|u| u.id == change.id);
-            match (index, from, to) {
-                // Remove a unit the edit created, unless someone has changed it since.
-                (Some(i), Some(from), None) if board.pawns[i] == *from => {
-                    board.pawns.remove(i);
-                }
-                // Bring back a unit the edit removed.
-                (None, None, Some(to)) => board.pawns.push(to.clone()),
-                // Change back each field nobody else has touched since.
-                (Some(i), Some(from), Some(to)) => {
-                    skipped |= merge_fields(&mut board.pawns[i], from, to);
-                }
-                // Someone else has since changed, removed or brought back this unit.
-                _ => skipped = true,
-            }
-        }
-
-        for change in &self.maps {
-            let (from, to) = if backwards {
-                (&change.after, &change.before)
-            } else {
-                (&change.before, &change.after)
-            };
-            let index = board.maps.iter().position(|map| map.id == change.id);
-            match (index, from, to) {
-                // Take a map off again, unless someone has changed it since.
-                (Some(i), Some(from), None) if board.maps[i] == *from => {
-                    board.maps.remove(i);
-                }
-                // Put a map back where it was in the stack. Clamped, because maps that were
-                // below it may have been taken off since.
-                (None, None, Some(to)) => {
-                    board.maps.insert(change.at.min(board.maps.len()), to.clone());
-                }
-                // Change back each field nobody else has touched since.
-                (Some(i), Some(from), Some(to)) => {
-                    skipped |= merge_map(&mut board.maps[i], from, to);
-                }
-                // Someone else has since changed, removed or brought back this map.
-                _ => skipped = true,
-            }
-        }
-        skipped
+    /// Apply this edit to the board in `direction`. Returns whether anything was skipped
+    /// because someone has changed it since.
+    fn apply(&self, board: &mut Board, direction: Direction) -> bool {
+        // Both lists are always applied: `|` does not short-circuit as `||` would.
+        apply_changes(&mut board.pawns, &self.units, direction)
+            | apply_changes(&mut board.maps, &self.maps, direction)
     }
-}
-
-/// Move each field of `unit` that still holds its value in `from` to its value in `to`.
-/// Returns whether any field was left alone.
-fn merge_fields(unit: &mut Unit, from: &Unit, to: &Unit) -> bool {
-    // Every field is named, with no `..`, so adding a field to `Unit` fails to compile
-    // until it is handled here.
-    let Unit {
-        id: _,
-        kind,
-        side,
-        pawn:
-            Pawn {
-                pos,
-                rot,
-                scale,
-                image,
-            },
-    } = to;
-    let skipped = [
-        merge(&mut unit.kind, &from.kind, kind),
-        merge(&mut unit.side, &from.side, side),
-        merge(&mut unit.pawn.pos, &from.pawn.pos, pos),
-        merge(&mut unit.pawn.rot, &from.pawn.rot, rot),
-        merge(&mut unit.pawn.scale, &from.pawn.scale, scale),
-        merge(&mut unit.pawn.image, &from.pawn.image, image),
-    ];
-    skipped.contains(&true)
-}
-
-/// Move each field of `map` that still holds its value in `from` to its value in `to`.
-/// Returns whether any field was left alone.
-fn merge_map(map: &mut MapImage, from: &MapImage, to: &MapImage) -> bool {
-    // Named with no `..`, so a new field on `MapImage` fails to compile until it is handled.
-    let MapImage {
-        id: _,
-        asset,
-        pos,
-        size,
-    } = to;
-    let skipped = [
-        merge(&mut map.asset, &from.asset, asset),
-        merge(&mut map.pos, &from.pos, pos),
-        merge(&mut map.size, &from.size, size),
-    ];
-    skipped.contains(&true)
 }
 
 /// Set `field` to `to` if it still holds `from`. Returns true when it was left alone because
 /// someone else set it to a third value.
-fn merge<T: PartialEq + Clone>(field: &mut T, from: &T, to: &T) -> bool {
+fn merge_field<T: PartialEq + Clone>(field: &mut T, from: &T, to: &T) -> bool {
     if field == from {
         *field = to.clone();
         false
@@ -581,7 +593,13 @@ mod tests {
     }
 
     fn pos(doc: &Doc, id: u64) -> [f32; 2] {
-        doc.board.pawns.iter().find(|u| u.id == id).unwrap().pawn.pos
+        doc.board
+            .pawns
+            .iter()
+            .find(|u| u.id == id)
+            .unwrap()
+            .pawn
+            .pos
     }
 
     #[test]
@@ -662,6 +680,26 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_an_umpire_leaves_the_board_and_the_other_umpires_alone() {
+        let mut doc = two_units();
+        doc.edit(A, |b| unit(b, 0).pawn.pos = [1.0, 1.0]);
+        doc.edit(B, |b| unit(b, 1).pawn.pos = [2.0, 2.0]);
+        doc.record_turn(0);
+        doc.view_turn(B, Some(0));
+
+        doc.forget_umpire(A);
+        assert_eq!(pos(&doc, 0), [1.0, 1.0]);
+        assert_eq!(doc.undo(A), Step::Empty);
+        assert_eq!(doc.viewing(B), Some(0));
+
+        // A new umpire reaching the same id finds no history waiting for it.
+        doc.edit(A, |b| unit(b, 0).pawn.rot = 1.0);
+        assert_eq!(doc.undo(A), Step::Applied);
+        assert_eq!(doc.undo(A), Step::Empty);
+        assert_eq!(pos(&doc, 0), [1.0, 1.0]);
+    }
+
+    #[test]
     fn an_edit_clears_only_its_own_umpires_redo() {
         let mut doc = two_units();
         doc.edit(A, |b| unit(b, 0).pawn.pos = [1.0, 1.0]);
@@ -675,6 +713,16 @@ mod tests {
     }
 
     #[test]
+    fn undoing_a_delete_puts_the_unit_back_in_its_place() {
+        let mut doc = two_units();
+        doc.board.spawn(UnitKind::Artillery, Side::Red, [20.0, 0.0]);
+        doc.edit(A, |b| b.pawns.retain(|u| u.id != 1));
+        doc.undo(A);
+        let ids: Vec<u64> = doc.board.pawns.iter().map(|u| u.id).collect();
+        assert_eq!(ids, [0, 1, 2], "back in the middle, not at the end");
+    }
+
+    #[test]
     fn ids_are_never_reused() {
         let mut doc = Doc::default();
         doc.record_turn(0);
@@ -685,7 +733,10 @@ mod tests {
         doc.edit(A, |b| {
             b.spawn(UnitKind::Infantry, Side::Blue, [0.0, 0.0]);
         });
-        assert_eq!(doc.board.pawns[0].id, 1, "undo does not wind back the counter");
+        assert_eq!(
+            doc.board.pawns[0].id, 1,
+            "undo does not wind back the counter"
+        );
 
         doc.step_turn(A, false);
         assert!(doc.restore_viewed_turn(A));
@@ -810,11 +861,7 @@ mod tests {
         // top of it.
         assert_eq!(doc.undo(A), Step::Applied);
         assert_eq!(
-            doc.board
-                .maps
-                .iter()
-                .map(|m| &m.asset)
-                .collect::<Vec<_>>(),
+            doc.board.maps.iter().map(|m| &m.asset).collect::<Vec<_>>(),
             [&image("first"), &image("second")]
         );
 

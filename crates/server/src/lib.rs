@@ -111,11 +111,19 @@ impl Game {
     /// A game with four fixed units on the live board.
     pub fn demo() -> Self {
         let mut doc = Doc::default();
-        doc.board.spawn(UnitKind::Infantry, Side::Blue, [-15.0, -5.0]);
+        doc.board
+            .spawn(UnitKind::Infantry, Side::Blue, [-15.0, -5.0]);
         doc.board.spawn(UnitKind::Cavalry, Side::Blue, [-5.0, 5.0]);
         doc.board.spawn(UnitKind::Artillery, Side::Red, [10.0, 0.0]);
         doc.board.spawn(UnitKind::Infantry, Side::Red, [20.0, 10.0]);
         Self::new(doc)
+    }
+
+    /// Forget the umpire a finished connection was: see [`Doc::forget_umpire`]. Nothing a
+    /// client is sent mentions an umpire, so alone among the writes to the document this one
+    /// wakes nobody.
+    async fn forget_umpire(&self, umpire: UmpireId) {
+        self.doc.write().await.forget_umpire(umpire);
     }
 
     /// Parse and apply one message from a client. Wakes every connection when the live board
@@ -190,12 +198,7 @@ pub enum Effect {
 
 /// Apply one client message to the document. Returns who must be sent a board. The images
 /// are read-only here: a command may only name one that has already been uploaded.
-fn apply(
-    doc: &mut Doc,
-    assets: &AssetStore,
-    umpire: UmpireId,
-    message: ClientMessage,
-) -> Effect {
+fn apply(doc: &mut Doc, assets: &AssetStore, umpire: UmpireId, message: ClientMessage) -> Effect {
     match message {
         ClientMessage::Spawn { kind, side, pos } => {
             // A number too large for f32, such as 1e39, arrives as infinity.
@@ -348,7 +351,11 @@ fn valid_placement(p: &Placement) -> bool {
 
 /// A refused edit still sends its umpire a board, so their client stops showing it.
 fn edited(applied: bool) -> Effect {
-    if applied { Effect::Everyone } else { Effect::Me }
+    if applied {
+        Effect::Everyone
+    } else {
+        Effect::Me
+    }
 }
 
 /// An empty history changed nothing anywhere, so nobody is told; a step refused because the
@@ -457,14 +464,23 @@ async fn upgrade(ws: WebSocketUpgrade, State(game): State<Game>) -> Response {
         .on_upgrade(|socket| client(socket, game))
 }
 
-/// Serve one connected client until it disconnects: send its view whenever the document
-/// changes, and apply the messages it sends.
+/// Serve one connected client until it disconnects, then forget the umpire it was.
 async fn client(mut socket: WebSocket, game: Game) {
     // Every connection is a new umpire until umpires can identify themselves.
     let umpire = game.next_umpire.fetch_add(1, Ordering::Relaxed);
+    serve_client(&mut socket, &game, umpire).await;
+    // Losing a connection loses the undo history with it, by decision: see
+    // `Doc::forget_umpire`. Done here, where every way out of the loop below meets, rather
+    // than at each of them.
+    game.forget_umpire(umpire).await;
+}
+
+/// Send this client its view whenever the document changes, and apply the messages it
+/// sends, until either end closes the socket.
+async fn serve_client(socket: &mut WebSocket, game: &Game, umpire: UmpireId) {
     // Subscribe before the first send, so a change made in between still wakes this loop.
     let mut changed = game.changed.subscribe();
-    if game.send_view(&mut socket, umpire).await.is_err() {
+    if game.send_view(socket, umpire).await.is_err() {
         return;
     }
     loop {
@@ -473,7 +489,7 @@ async fn client(mut socket: WebSocket, game: Game) {
                 Some(Ok(Message::Text(text))) => {
                     // `Everyone` arrives through the watch channel below, like any other change.
                     if game.receive(umpire, &text).await == Effect::Me
-                        && game.send_view(&mut socket, umpire).await.is_err()
+                        && game.send_view(socket, umpire).await.is_err()
                     {
                         break;
                     }
@@ -488,7 +504,7 @@ async fn client(mut socket: WebSocket, game: Game) {
                         let reply = ServerMessage::AssetRejected {
                             reason: error.to_string(),
                         };
-                        if send(&mut socket, &reply).await.is_err() {
+                        if send(socket, &reply).await.is_err() {
                             break;
                         }
                     }
@@ -498,14 +514,13 @@ async fn client(mut socket: WebSocket, game: Game) {
                 Some(Ok(_)) => {}
             },
             Ok(()) = changed.changed() => {
-                if game.send_view(&mut socket, umpire).await.is_err() {
+                if game.send_view(socket, umpire).await.is_err() {
                     break;
                 }
             }
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,7 +554,10 @@ mod tests {
     fn spawn_rejects_non_finite_positions() {
         let mut doc = Doc::default();
         // Refused, and only the umpire who sent it is told.
-        assert_eq!(apply(&mut doc, 0, spawn_at([f32::INFINITY, 0.0])), Effect::Me);
+        assert_eq!(
+            apply(&mut doc, 0, spawn_at([f32::INFINITY, 0.0])),
+            Effect::Me
+        );
         assert!(doc.board.pawns.is_empty());
     }
 
@@ -609,7 +627,11 @@ mod tests {
     #[test]
     fn move_rejects_non_finite_positions() {
         let mut doc = two_units();
-        let effect = apply(&mut doc, 0, move_to(&[(0, [3.0, 3.0]), (1, [f32::NAN, 0.0])]));
+        let effect = apply(
+            &mut doc,
+            0,
+            move_to(&[(0, [3.0, 3.0]), (1, [f32::NAN, 0.0])]),
+        );
         assert_eq!(effect, Effect::Me);
         // The whole command is refused, so the valid part is not applied either.
         assert_eq!(doc.board.pawns[0].pawn.pos, [0.0, 0.0]);
@@ -695,7 +717,10 @@ mod tests {
     #[test]
     fn recording_a_turn_stamps_it_and_tells_everyone() {
         let mut doc = two_units();
-        assert_eq!(apply(&mut doc, 0, ClientMessage::RecordTurn), Effect::Everyone);
+        assert_eq!(
+            apply(&mut doc, 0, ClientMessage::RecordTurn),
+            Effect::Everyone
+        );
         assert_eq!(doc.turns.len(), 1);
         assert_eq!(doc.turns[0].board.pawns.len(), 2);
         assert!(doc.turns[0].recorded_at > 0, "stamped from the wall clock");
@@ -758,7 +783,10 @@ mod tests {
         apply(&mut doc, 0, move_to(&[(0, [5.0, 5.0])]));
         apply(&mut doc, 0, ClientMessage::ViewTurn { turn: Some(0) });
 
-        assert_eq!(apply(&mut doc, 0, ClientMessage::RestoreTurn), Effect::Everyone);
+        assert_eq!(
+            apply(&mut doc, 0, ClientMessage::RestoreTurn),
+            Effect::Everyone
+        );
         assert_eq!(doc.viewing(0), None, "back on the live board");
         assert_eq!(doc.board.pawns[0].pawn.pos, [0.0, 0.0]);
 
@@ -790,7 +818,10 @@ mod tests {
             parse(r#"{"type":"viewTurn","turn":null}"#),
             ClientMessage::ViewTurn { turn: None }
         );
-        assert_eq!(parse(r#"{"type":"restoreTurn"}"#), ClientMessage::RestoreTurn);
+        assert_eq!(
+            parse(r#"{"type":"restoreTurn"}"#),
+            ClientMessage::RestoreTurn
+        );
     }
 
     #[test]
@@ -895,7 +926,10 @@ mod tests {
         assert_eq!(doc.board.maps[0].size, [100.0, 50.0]);
 
         // The same image again is a second map, not a replacement.
-        assert_eq!(super::apply(&mut doc, &store, 0, add(&map)), Effect::Everyone);
+        assert_eq!(
+            super::apply(&mut doc, &store, 0, add(&map)),
+            Effect::Everyone
+        );
         assert_eq!(doc.board.maps.len(), 2);
         assert!(
             doc.board.maps[1].pos[0] > doc.board.maps[0].pos[0],
@@ -932,7 +966,10 @@ mod tests {
             asset: stranger.clone(),
         };
         assert_eq!(super::apply(&mut doc, &store, 0, map), Effect::Me);
-        assert!(doc.board.maps.is_empty(), "the board names no missing image");
+        assert!(
+            doc.board.maps.is_empty(),
+            "the board names no missing image"
+        );
 
         let unit = ClientMessage::SetUnitImage {
             units: vec![0],
@@ -988,8 +1025,11 @@ mod tests {
     async fn a_game_saves_and_loads_itself() {
         let game = Game::new(Doc::default());
         let id = game.add_asset(test_png(1024, 512)).await.unwrap();
-        game.receive(0, r#"{"type":"spawn","kind":"Cavalry","side":"Red","pos":[4,5]}"#)
-            .await;
+        game.receive(
+            0,
+            r#"{"type":"spawn","kind":"Cavalry","side":"Red","pos":[4,5]}"#,
+        )
+        .await;
         game.receive(0, &format!(r#"{{"type":"addMap","asset":"{id}"}}"#))
             .await;
         game.receive(0, r#"{"type":"recordTurn"}"#).await;
@@ -1014,7 +1054,10 @@ mod tests {
         let game = Game::demo();
         let before = game.doc.read().await.board.pawns.len();
 
-        let error = game.load(Bytes::from_static(b"not a save file")).await.unwrap_err();
+        let error = game
+            .load(Bytes::from_static(b"not a save file"))
+            .await
+            .unwrap_err();
         assert!(matches!(error, SaveError::Archive(_)), "{error}");
         assert_eq!(game.doc.read().await.board.pawns.len(), before);
     }

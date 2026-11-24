@@ -101,9 +101,7 @@ pub enum ClientMessage {
     StepTurn { forward: bool },
     /// Show this umpire one recorded turn, or the live board with `null`. Only this umpire's
     /// view changes; the others keep working on the live board.
-    ViewTurn {
-        turn: Option<usize>,
-    },
+    ViewTurn { turn: Option<usize> },
     /// Copy the turn this umpire is viewing into the live board, as one undoable edit, and
     /// return them to the live board.
     RestoreTurn,

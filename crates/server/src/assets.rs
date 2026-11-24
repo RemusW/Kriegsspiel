@@ -10,7 +10,10 @@
 //! the browser to decode, so it only has to be sure the bytes really are an image of a format
 //! every target browser can display.
 
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::HashMap,
+    fmt::{self, Write as _},
+};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -25,49 +28,29 @@ const ID_LENGTH: usize = 64;
 
 /// An image id: the lowercase hex SHA-256 of the image's bytes.
 ///
-/// Made only by hashing bytes or by checking a string from outside, including when one is
-/// deserialized, so holding an `AssetId` means the string has that shape and is safe to use
-/// as a key or a file name. Whether the store holds the image is a separate question.
-// Serde is implemented by hand below rather than with `#[serde(try_from)]`, which ts-rs does
-// not understand and warns about on every build.
+/// Made only by hashing bytes ([`AssetId::of`]) or by checking a string from outside
+/// ([`AssetId::parse`], which deserializing also goes through), so holding an `AssetId` means
+/// the string has that shape and is safe to use as a key or a file name. Whether the store
+/// holds the image is a separate question.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, TS)]
 #[ts(export, export_to = "assets.ts", type = "string")]
 pub struct AssetId(String);
-
-impl Serialize for AssetId {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for AssetId {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let id = String::deserialize(deserializer)?;
-        Self::try_from(id).map_err(serde::de::Error::custom)
-    }
-}
 
 impl AssetId {
     /// The id of these bytes. Clients compute the same id with `crypto.subtle.digest`, so this
     /// must stay plain SHA-256 of the file as uploaded.
     pub fn of(bytes: &[u8]) -> Self {
-        let digest = Sha256::digest(bytes);
         let mut id = String::with_capacity(ID_LENGTH);
-        for byte in digest.iter() {
-            // Hex digits, two per byte, without pulling in a hex crate.
-            id.push(char::from_digit((byte >> 4) as u32, 16).expect("a nibble is a hex digit"));
-            id.push(char::from_digit((byte & 0xf) as u32, 16).expect("a nibble is a hex digit"));
+        for byte in Sha256::digest(bytes) {
+            write!(id, "{byte:02x}").expect("writing to a String cannot fail");
         }
         Self(id)
     }
 
     /// An id from outside, if it has the shape of one.
     pub fn parse(id: &str) -> Option<Self> {
-        let valid = id.len() == ID_LENGTH
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-        valid.then(|| Self(id.to_owned()))
+        let is_lowercase_hex = id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        (id.len() == ID_LENGTH && is_lowercase_hex).then(|| Self(id.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -81,27 +64,22 @@ impl fmt::Display for AssetId {
     }
 }
 
-impl TryFrom<String> for AssetId {
-    type Error = NotAnAssetId;
-
-    fn try_from(id: String) -> Result<Self, NotAnAssetId> {
-        Self::parse(&id).ok_or(NotAnAssetId)
+// Serde by hand rather than `#[serde(try_from = "String")]`, which ts-rs does not understand
+// and warns about on every build. On the wire an id is a plain string.
+impl Serialize for AssetId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
     }
 }
 
-impl From<AssetId> for String {
-    fn from(id: AssetId) -> Self {
-        id.0
-    }
-}
-
-/// A string that is not 64 lowercase hex digits, offered as an asset id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotAnAssetId;
-
-impl fmt::Display for NotAnAssetId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not an asset id: expected {ID_LENGTH} lowercase hex digits")
+impl<'de> Deserialize<'de> for AssetId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let id = String::deserialize(deserializer)?;
+        Self::parse(&id).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "not an asset id: expected {ID_LENGTH} lowercase hex digits"
+            ))
+        })
     }
 }
 
@@ -141,7 +119,9 @@ pub struct Asset {
 /// Why the store would not take an image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssetError {
-    TooLarge { bytes: usize },
+    TooLarge {
+        bytes: usize,
+    },
     /// Not a format the store accepts.
     Unsupported,
     /// The right magic bytes, but the header that follows makes no sense.
@@ -360,7 +340,11 @@ mod tests {
     fn an_id_is_checked_when_deserialized() {
         let id = AssetId::of(b"anything");
         let json = serde_json::to_string(&id).unwrap();
-        assert_eq!(json, format!("\"{id}\""), "on the wire it is a plain string");
+        assert_eq!(
+            json,
+            format!("\"{id}\""),
+            "on the wire it is a plain string"
+        );
         assert_eq!(serde_json::from_str::<AssetId>(&json).unwrap(), id);
         assert!(serde_json::from_str::<AssetId>(r#""../../etc/passwd""#).is_err());
     }
@@ -422,7 +406,10 @@ mod tests {
         let mut wrong_chunk = test_png(8, 8).to_vec();
         wrong_chunk[12..16].copy_from_slice(b"iCCP");
         let wrong_chunk = Bytes::from(wrong_chunk);
-        assert_eq!(store.insert(wrong_chunk).unwrap_err(), AssetError::Malformed);
+        assert_eq!(
+            store.insert(wrong_chunk).unwrap_err(),
+            AssetError::Malformed
+        );
 
         // A zero dimension would make a map plane with no extent.
         assert_eq!(
